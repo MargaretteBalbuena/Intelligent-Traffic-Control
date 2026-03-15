@@ -1197,7 +1197,8 @@ if (rootElement) {
 const dashboardState = {
   ns: 'green',
   ew: 'red',
-  transitionLock: false
+  transitioning: false,
+  queued: false
 };
 
 const dashboardDom = {
@@ -1270,7 +1271,7 @@ function renderLamp(group, active) {
 function renderDashboard() {
   renderLamp(dashboardDom.ns, dashboardState.ns);
   renderLamp(dashboardDom.ew, dashboardState.ew);
-  dashboardDom.btnSwitch.disabled = dashboardState.transitionLock;
+  dashboardDom.btnSwitch.disabled = dashboardState.transitioning;
 }
 
 function delay(ms) {
@@ -1278,12 +1279,16 @@ function delay(ms) {
 }
 
 async function runTransition(source) {
-  if (dashboardState.transitionLock) {
-    logEvent('warn', `Transition request ignored (${source}); transition already in progress.`);
+  if (dashboardState.transitioning) {
+    if (!dashboardState.queued) {
+      dashboardState.queued = true;
+      logEvent('warn', `Transition queued (${source}); will run after current transition.`);
+    }
     return;
   }
 
-  dashboardState.transitionLock = true;
+  dashboardState.transitioning = true;
+  dashboardState.queued = false;
   renderDashboard();
 
   const nsIsActive = dashboardState.ns === 'green';
@@ -1291,6 +1296,7 @@ async function runTransition(source) {
   const to = nsIsActive ? 'East-West' : 'North-South';
   logEvent('info', `Transition started: ${from} -> ${to}.`);
 
+  // Step 1: active direction goes Yellow, other stays Red
   const safe = nsIsActive
     ? applyState('yellow', 'red', 'phase-yellow')
     : applyState('red', 'yellow', 'phase-yellow');
@@ -1298,17 +1304,20 @@ async function runTransition(source) {
     forceAllRed('unsafe-yellow-blocked');
     return;
   }
+  logEvent('info', `${from} YELLOW — clearing intersection (3 s).`);
 
-  await delay(2000);
+  await delay(3000); // 3 s yellow phase
 
+  // Step 2: both Red
   if (!applyState('red', 'red', 'phase-all-red')) {
     forceAllRed('unsafe-all-red-blocked');
     return;
   }
-  logEvent('warn', 'Safety gap: all directions RED.');
+  logEvent('warn', 'Safety gap: all directions RED (1 s).');
 
-  await delay(900);
+  await delay(1000); // 1 s safety buffer
 
+  // Step 3: incoming direction goes Green
   const openSafe = nsIsActive
     ? applyState('red', 'green', 'phase-open-ew')
     : applyState('green', 'red', 'phase-open-ns');
@@ -1319,14 +1328,21 @@ async function runTransition(source) {
   }
 
   logEvent('info', `Transition complete: ${to} GREEN.`);
-  dashboardState.transitionLock = false;
+  dashboardState.transitioning = false;
   renderDashboard();
+
+  // Run queued transition if one was requested during this transition
+  if (dashboardState.queued) {
+    logEvent('info', 'Running queued transition request.');
+    runTransition('queued');
+  }
 }
 
 function forceAllRed(reason) {
   dashboardState.ns = 'red';
   dashboardState.ew = 'red';
-  dashboardState.transitionLock = false;
+  dashboardState.transitioning = false;
+  dashboardState.queued = false;
   renderDashboard();
   logEvent('error', `Emergency fallback engaged (${reason}). All lights forced RED.`);
 }
