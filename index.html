@@ -17,11 +17,53 @@
 <body>
 	<div id="app"></div>
 
-	<section class="hud" aria-label="Scene Description">
-		
-		<h1>Intelligent Traffic Control</h1>
-		
-	</section>
+	<main class="dashboard-shell" aria-label="Intelligent Traffic Control Dashboard">
+		<section class="panel panel-main" aria-label="Traffic Signals">
+			<header class="panel-head">
+				
+				<h1>Intelligent Traffic Control</h1>
+				<p class="copy">Manually switch directions.</p>
+			</header>
+
+			<div class="intersection-grid">
+				<article class="signal-card" id="card-ns">
+					<div class="signal-meta">
+						<h2>North-South</h2>
+						<span class="state-pill" id="pill-ns">GREEN</span>
+					</div>
+					<div class="traffic-light" aria-label="North-South traffic light">
+						<div class="light-bulb" id="ns-red"></div>
+						<div class="light-bulb" id="ns-yellow"></div>
+						<div class="light-bulb" id="ns-green"></div>
+					</div>
+				</article>
+
+				<article class="signal-card" id="card-ew">
+					<div class="signal-meta">
+						<h2>East-West</h2>
+						<span class="state-pill" id="pill-ew">RED</span>
+					</div>
+					<div class="traffic-light" aria-label="East-West traffic light">
+						<div class="light-bulb" id="ew-red"></div>
+						<div class="light-bulb" id="ew-yellow"></div>
+						<div class="light-bulb" id="ew-green"></div>
+					</div>
+				</article>
+			</div>
+
+			<div class="controls-row">
+				<button id="btn-switch" class="action-btn" type="button">Switch Direction</button>
+			</div>
+		</section>
+
+		<aside class="panel panel-log" aria-label="System Logs">
+			<div class="log-head">
+				<h2>System Logs</h2>
+				<span class="chip" id="chip-mode">MANUAL</span>
+			</div>
+			<div class="log-body" id="log-body" role="log" aria-live="polite"></div>
+		</aside>
+	</main>
 
 	<script type="module" src="./script.js"></script>
 </body>

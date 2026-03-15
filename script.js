@@ -1193,3 +1193,152 @@ if (rootElement) {
     })
   );
 }
+
+const dashboardState = {
+  ns: 'green',
+  ew: 'red',
+  transitionLock: false
+};
+
+const dashboardDom = {
+  ns: {
+    red: document.getElementById('ns-red'),
+    yellow: document.getElementById('ns-yellow'),
+    green: document.getElementById('ns-green'),
+    pill: document.getElementById('pill-ns'),
+    card: document.getElementById('card-ns')
+  },
+  ew: {
+    red: document.getElementById('ew-red'),
+    yellow: document.getElementById('ew-yellow'),
+    green: document.getElementById('ew-green'),
+    pill: document.getElementById('pill-ew'),
+    card: document.getElementById('card-ew')
+  },
+  btnSwitch: document.getElementById('btn-switch'),
+  modeChip: document.getElementById('chip-mode'),
+  logBody: document.getElementById('log-body')
+};
+
+const DASHBOARD_READY =
+  dashboardDom.ns.red &&
+  dashboardDom.ns.yellow &&
+  dashboardDom.ns.green &&
+  dashboardDom.ew.red &&
+  dashboardDom.ew.yellow &&
+  dashboardDom.ew.green;
+
+if (DASHBOARD_READY) {
+  initTrafficDashboard();
+}
+
+function initTrafficDashboard() {
+  renderDashboard();
+  dashboardDom.modeChip.textContent = 'MANUAL';
+  logEvent('info', 'System boot complete. North-South starts GREEN.');
+  logEvent('info', 'Manual mode active. Use Switch Direction to transition safely.');
+
+  dashboardDom.btnSwitch.addEventListener('click', () => {
+    runTransition('manual-switch');
+  });
+}
+
+function isSafeState(ns, ew) {
+  const nsMoving = ns === 'green' || ns === 'yellow';
+  const ewMoving = ew === 'green' || ew === 'yellow';
+  return !(nsMoving && ewMoving);
+}
+
+function applyState(ns, ew, reason) {
+  if (!isSafeState(ns, ew)) {
+    logEvent('error', `Unsafe state blocked (${reason}): NS ${ns.toUpperCase()} / EW ${ew.toUpperCase()}.`);
+    return false;
+  }
+  dashboardState.ns = ns;
+  dashboardState.ew = ew;
+  renderDashboard();
+  return true;
+}
+
+function renderLamp(group, active) {
+  group.red.classList.toggle('active-red', active === 'red');
+  group.yellow.classList.toggle('active-yellow', active === 'yellow');
+  group.green.classList.toggle('active-green', active === 'green');
+  group.pill.textContent = active.toUpperCase();
+}
+
+function renderDashboard() {
+  renderLamp(dashboardDom.ns, dashboardState.ns);
+  renderLamp(dashboardDom.ew, dashboardState.ew);
+  dashboardDom.btnSwitch.disabled = dashboardState.transitionLock;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function runTransition(source) {
+  if (dashboardState.transitionLock) {
+    logEvent('warn', `Transition request ignored (${source}); transition already in progress.`);
+    return;
+  }
+
+  dashboardState.transitionLock = true;
+  renderDashboard();
+
+  const nsIsActive = dashboardState.ns === 'green';
+  const from = nsIsActive ? 'North-South' : 'East-West';
+  const to = nsIsActive ? 'East-West' : 'North-South';
+  logEvent('info', `Transition started: ${from} -> ${to}.`);
+
+  const safe = nsIsActive
+    ? applyState('yellow', 'red', 'phase-yellow')
+    : applyState('red', 'yellow', 'phase-yellow');
+  if (!safe) {
+    forceAllRed('unsafe-yellow-blocked');
+    return;
+  }
+
+  await delay(2000);
+
+  if (!applyState('red', 'red', 'phase-all-red')) {
+    forceAllRed('unsafe-all-red-blocked');
+    return;
+  }
+  logEvent('warn', 'Safety gap: all directions RED.');
+
+  await delay(900);
+
+  const openSafe = nsIsActive
+    ? applyState('red', 'green', 'phase-open-ew')
+    : applyState('green', 'red', 'phase-open-ns');
+
+  if (!openSafe) {
+    forceAllRed('unsafe-open-blocked');
+    return;
+  }
+
+  logEvent('info', `Transition complete: ${to} GREEN.`);
+  dashboardState.transitionLock = false;
+  renderDashboard();
+}
+
+function forceAllRed(reason) {
+  dashboardState.ns = 'red';
+  dashboardState.ew = 'red';
+  dashboardState.transitionLock = false;
+  renderDashboard();
+  logEvent('error', `Emergency fallback engaged (${reason}). All lights forced RED.`);
+}
+
+function logEvent(level, message) {
+  const now = new Date().toLocaleTimeString();
+  const entry = document.createElement('article');
+  entry.className = `log-entry ${level}`;
+  entry.innerHTML = `<span class="log-time">${now}</span><span>${message}</span>`;
+  dashboardDom.logBody.prepend(entry);
+
+  while (dashboardDom.logBody.children.length > 80) {
+    dashboardDom.logBody.removeChild(dashboardDom.logBody.lastChild);
+  }
+}
