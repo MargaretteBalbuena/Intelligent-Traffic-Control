@@ -1194,167 +1194,380 @@ if (rootElement) {
   );
 }
 
-const dashboardState = {
-  ns: 'green',
+// =============================================================================
+// INTELLIGENT TRAFFIC CONTROL — Dashboard Module
+// =============================================================================
+//
+// ARCHITECTURE OVERVIEW
+// ─────────────────────
+// All user interactions funnel through a single, linear call chain:
+//
+//   click event
+//     └─► handleLogic()       decides whether to act or queue
+//           └─► transitionLights()  drives the async state machine
+//                 └─► _applyState()     writes to `state`
+//                       └─► updateUI()  reflects `state` in the DOM
+//
+// Only `_applyState()` is allowed to mutate `state.ns` / `state.ew`.
+// Only `updateUI()` is allowed to touch traffic-light DOM classes.
+// This one-way data flow makes every step easy to trace and test.
+// =============================================================================
+
+
+// ─── State ───────────────────────────────────────────────────────────────────
+//
+// Single source of truth. Every function reads from here; DOM is only
+// ever updated as a consequence of `state` changing through _applyState().
+//
+// `transitioning` and `queued` together form the race-condition guard:
+//   • transitioning — true for the full duration of any async transition.
+//   • queued        — records that exactly one follow-up switch is pending.
+// At most one transition ever runs at a time; at most one can be waiting.
+const state = {
+  ns: 'green',   // 'red' | 'yellow' | 'green'
   ew: 'red',
   transitioning: false,
   queued: false
 };
 
-const dashboardDom = {
+
+// ─── DOM References ──────────────────────────────────────────────────────────
+//
+// All nodes are selected with document.querySelector() (required constraint).
+// Cached once at module load so no function performs repeated DOM lookups.
+const dom = {
   ns: {
-    red: document.getElementById('ns-red'),
-    yellow: document.getElementById('ns-yellow'),
-    green: document.getElementById('ns-green'),
-    pill: document.getElementById('pill-ns'),
-    card: document.getElementById('card-ns')
+    red:    document.querySelector('#ns-red'),
+    yellow: document.querySelector('#ns-yellow'),
+    green:  document.querySelector('#ns-green'),
+    pill:   document.querySelector('#pill-ns')
   },
   ew: {
-    red: document.getElementById('ew-red'),
-    yellow: document.getElementById('ew-yellow'),
-    green: document.getElementById('ew-green'),
-    pill: document.getElementById('pill-ew'),
-    card: document.getElementById('card-ew')
+    red:    document.querySelector('#ew-red'),
+    yellow: document.querySelector('#ew-yellow'),
+    green:  document.querySelector('#ew-green'),
+    pill:   document.querySelector('#pill-ew')
   },
-  btnSwitch: document.getElementById('btn-switch'),
-  modeChip: document.getElementById('chip-mode'),
-  logBody: document.getElementById('log-body')
+  btnSwitch: document.querySelector('#btn-switch'),
+  modeChip:  document.querySelector('#chip-mode'),
+  logBody:   document.querySelector('#log-body')
 };
 
-const DASHBOARD_READY =
-  dashboardDom.ns.red &&
-  dashboardDom.ns.yellow &&
-  dashboardDom.ns.green &&
-  dashboardDom.ew.red &&
-  dashboardDom.ew.yellow &&
-  dashboardDom.ew.green;
 
-if (DASHBOARD_READY) {
-  initTrafficDashboard();
+// ─── Utility helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Returns a Promise that resolves after `ms` milliseconds.
+ *
+ * EVENT LOOP NOTE:
+ *   JavaScript is single-threaded. `await delay(ms)` does NOT block the
+ *   thread. Instead it schedules a callback via setTimeout, suspends the
+ *   current async function, and returns control to the event loop.
+ *   While waiting, the browser can repaint, fire click events, and run
+ *   other callbacks normally — the page stays fully responsive.
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function initTrafficDashboard() {
-  renderDashboard();
-  dashboardDom.modeChip.textContent = 'MANUAL';
-  logEvent('info', 'System boot complete. North-South starts GREEN.');
-  logEvent('info', 'Manual mode active. Use Switch Direction to transition safely.');
-
-  dashboardDom.btnSwitch.addEventListener('click', () => {
-    runTransition('manual-switch');
-  });
-}
-
+/**
+ * Safety invariant: two directions must never both be green or both be yellow.
+ * Returns false if the proposed (ns, ew) pair would violate that rule.
+ */
 function isSafeState(ns, ew) {
   const nsMoving = ns === 'green' || ns === 'yellow';
   const ewMoving = ew === 'green' || ew === 'yellow';
   return !(nsMoving && ewMoving);
 }
 
-function applyState(ns, ew, reason) {
-  if (!isSafeState(ns, ew)) {
-    logEvent('error', `Unsafe state blocked (${reason}): NS ${ns.toUpperCase()} / EW ${ew.toUpperCase()}.`);
-    return false;
-  }
-  dashboardState.ns = ns;
-  dashboardState.ew = ew;
-  renderDashboard();
-  return true;
+
+// ─── updateUI ────────────────────────────────────────────────────────────────
+
+/**
+ * updateUI() — reads `state` and syncs every visual element to it.
+ *
+ * STATE PROPAGATION:
+ *   _applyState() writes state.ns / state.ew
+ *     └─► updateUI() is called immediately after every write
+ *           └─► _updateLamp() applies CSS classes to bulb elements
+ *
+ * This is the ONLY place the DOM is touched for signal state.
+ * Centralising all DOM writes here means a single breakpoint can
+ * observe every visual change in the application.
+ */
+function updateUI() {
+  _updateLamp(dom.ns, state.ns);
+  _updateLamp(dom.ew, state.ew);
+
+  // The button is disabled (not removed) while a transition runs.
+  // Clicks are still received and queued via handleLogic().
+  dom.btnSwitch.disabled = state.transitioning;
 }
 
-function renderLamp(group, active) {
-  group.red.classList.toggle('active-red', active === 'red');
+/**
+ * Applies exactly one active-* CSS class to a traffic-light column.
+ *
+ * classList.toggle(className, force):
+ *   • force=true  → adds the class (equivalent to classList.add)
+ *   • force=false → removes the class (equivalent to classList.remove)
+ * One call handles both the on AND off case, so each colour needs
+ * only a single line regardless of whether it is activating or deactivating.
+ *
+ * @param {{ red, yellow, green, pill }} group - cached DOM nodes for one direction
+ * @param {'red'|'yellow'|'green'} active      - the colour that should be lit
+ */
+function _updateLamp(group, active) {
+  group.red.classList.toggle('active-red',       active === 'red');
   group.yellow.classList.toggle('active-yellow', active === 'yellow');
-  group.green.classList.toggle('active-green', active === 'green');
+  group.green.classList.toggle('active-green',   active === 'green');
   group.pill.textContent = active.toUpperCase();
 }
 
-function renderDashboard() {
-  renderLamp(dashboardDom.ns, dashboardState.ns);
-  renderLamp(dashboardDom.ew, dashboardState.ew);
-  dashboardDom.btnSwitch.disabled = dashboardState.transitioning;
+
+// ─── logEvent ────────────────────────────────────────────────────────────────
+
+/**
+ * logEvent() — prepends a timestamped entry to the System Logs panel.
+ *
+ * Newest entries appear at the top (prepend). A rolling cap of 80 entries
+ * prevents unbounded memory growth in long sessions.
+ *
+ * @param {'info'|'warn'|'error'} level
+ * @param {string} message
+ */
+function logEvent(level, message) {
+  const now   = new Date().toLocaleTimeString();
+  const entry = document.createElement('article');
+  entry.className = `log-entry ${level}`;
+  entry.innerHTML = `<span class="log-time">${now}</span><span>${message}</span>`;
+  dom.logBody.prepend(entry);
+
+  while (dom.logBody.children.length > 80) {
+    dom.logBody.removeChild(dom.logBody.lastChild);
+  }
 }
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
-async function runTransition(source) {
-  if (dashboardState.transitioning) {
-    if (!dashboardState.queued) {
-      dashboardState.queued = true;
-      logEvent('warn', `Transition queued (${source}); will run after current transition.`);
+// ─── handleLogic ─────────────────────────────────────────────────────────────
+
+/**
+ * handleLogic() — the decision layer between the click event and the
+ * asynchronous transition engine.
+ *
+ * RACE CONDITION PREVENTION:
+ *   The button click event fires synchronously on the main thread.
+ *   However, transitionLights() is async — once it hits the first
+ *   `await`, it yields back to the event loop, allowing further clicks
+ *   to reach handleLogic() while the transition is still running.
+ *
+ *   Without a guard, two transitions could overlap and produce unsafe states.
+ *   handleLogic() prevents this with two rules:
+ *
+ *   1. If state.transitioning is true, do NOT call transitionLights() again.
+ *      Instead, record that a follow-up is desired (state.queued = true).
+ *
+ *   2. state.queued is a boolean flag, not a counter or array. Multiple clicks
+ *      during one transition all resolve to "one pending switch", not many.
+ *      This prevents an unbounded queue from building up.
+ *
+ * STATE PROPAGATION:
+ *   click event
+ *     └─► handleLogic()   (decides: run now, queue, or drop)
+ *           └─► transitionLights()  (async state machine — only if safe to start)
+ *
+ * @param {string} source - identifier for logging (e.g. 'manual-switch')
+ */
+function handleLogic(source) {
+  if (state.transitioning) {
+    // A transition is already running. Queue at most one follow-up switch.
+    if (!state.queued) {
+      state.queued = true;
+      logEvent('warn', `Switch queued (${source}); will run after current transition completes.`);
     }
+    // Further clicks while state.queued is already true are silently dropped.
     return;
   }
 
-  dashboardState.transitioning = true;
-  dashboardState.queued = false;
-  renderDashboard();
+  // No transition in flight — safe to start one immediately.
+  transitionLights(source);
+}
 
-  const nsIsActive = dashboardState.ns === 'green';
-  const from = nsIsActive ? 'North-South' : 'East-West';
-  const to = nsIsActive ? 'East-West' : 'North-South';
-  logEvent('info', `Transition started: ${from} -> ${to}.`);
 
-  // Step 1: active direction goes Yellow, other stays Red
-  const safe = nsIsActive
-    ? applyState('yellow', 'red', 'phase-yellow')
-    : applyState('red', 'yellow', 'phase-yellow');
-  if (!safe) {
-    forceAllRed('unsafe-yellow-blocked');
-    return;
-  }
+// ─── transitionLights ────────────────────────────────────────────────────────
+
+/**
+ * transitionLights() — asynchronous three-phase safe-transition sequence.
+ *
+ * EVENT LOOP BEHAVIOUR:
+ *   This function is declared `async`, so it returns a Promise immediately
+ *   when called. Its body runs synchronously up to the first `await`, then
+ *   suspends. Execution of the rest of the function resumes only after the
+ *   awaited Promise resolves — but during the wait the event loop is free.
+ *
+ *   Timeline for a NS → EW switch:
+ *
+ *   [call]  → sets state.transitioning = true, disables button
+ *   [sync]  → Phase 1: NS=YELLOW / EW=RED applied instantly
+ *   [await] → delay(3000) — loop free for 3 s (repaint, click, etc.)
+ *   [sync]  → Phase 2: NS=RED / EW=RED applied instantly
+ *   [await] → delay(1000) — loop free for 1 s
+ *   [sync]  → Phase 3: NS=RED / EW=GREEN applied instantly
+ *   [sync]  → state.transitioning = false, re-enables button
+ *   [sync]  → if state.queued, calls transitionLights('queued')
+ *
+ * RACE CONDITION PREVENTION:
+ *   state.transitioning is the mutex. It is set to true at function entry
+ *   and cleared only at the very end (or in _forceAllRed on error).
+ *   handleLogic() checks it before ever calling this function, so at most
+ *   one async chain is active at any given time.
+ *
+ * STATE PROPAGATION (each phase):
+ *   transitionLights()
+ *     └─► _applyState(ns, ew)   validates + writes state.ns / state.ew
+ *           └─► updateUI()      reflects new state in DOM
+ *
+ * @param {string} source - label for log attribution
+ */
+async function transitionLights(source) {
+  // ── Acquire the transition lock ───────────────────────────────────────────
+  // No further calls to transitionLights() will start until we release this.
+  state.transitioning = true;
+  state.queued = false;
+  updateUI(); // disable the button immediately
+
+  const nsIsGreen = state.ns === 'green';
+  const from = nsIsGreen ? 'North-South' : 'East-West';
+  const to   = nsIsGreen ? 'East-West'   : 'North-South';
+  logEvent('info', `Transition started: ${from} → ${to}.`);
+
+  // ── Phase 1: Yellow (3 s) ─────────────────────────────────────────────────
+  // The active direction warns drivers to clear the intersection.
+  // The opposite direction stays Red — never two moving directions at once.
+  const yellowApplied = nsIsGreen
+    ? _applyState('yellow', 'red',    'phase-yellow')
+    : _applyState('red',    'yellow', 'phase-yellow');
+
+  if (!yellowApplied) { _forceAllRed('unsafe-yellow-blocked'); return; }
   logEvent('info', `${from} YELLOW — clearing intersection (3 s).`);
 
-  await delay(3000); // 3 s yellow phase
+  // Suspends here; the event loop handles repaints/clicks for 3 s.
+  await delay(3000);
 
-  // Step 2: both Red
-  if (!applyState('red', 'red', 'phase-all-red')) {
-    forceAllRed('unsafe-all-red-blocked');
+  // ── Phase 2: All Red (1 s safety buffer) ─────────────────────────────────
+  // Both directions are Red simultaneously, guaranteeing the intersection
+  // is fully clear before any new green phase begins.
+  if (!_applyState('red', 'red', 'phase-all-red')) {
+    _forceAllRed('unsafe-all-red-blocked');
     return;
   }
   logEvent('warn', 'Safety gap: all directions RED (1 s).');
 
-  await delay(1000); // 1 s safety buffer
+  await delay(1000);
 
-  // Step 3: incoming direction goes Green
-  const openSafe = nsIsActive
-    ? applyState('red', 'green', 'phase-open-ew')
-    : applyState('green', 'red', 'phase-open-ns');
+  // ── Phase 3: Open incoming direction ─────────────────────────────────────
+  const greenApplied = nsIsGreen
+    ? _applyState('red',   'green', 'phase-open-ew')
+    : _applyState('green', 'red',   'phase-open-ns');
 
-  if (!openSafe) {
-    forceAllRed('unsafe-open-blocked');
-    return;
-  }
-
+  if (!greenApplied) { _forceAllRed('unsafe-open-blocked'); return; }
   logEvent('info', `Transition complete: ${to} GREEN.`);
-  dashboardState.transitioning = false;
-  renderDashboard();
 
-  // Run queued transition if one was requested during this transition
-  if (dashboardState.queued) {
-    logEvent('info', 'Running queued transition request.');
-    runTransition('queued');
+  // ── Release the transition lock ───────────────────────────────────────────
+  state.transitioning = false;
+  updateUI(); // re-enable the button
+
+  // Honour a queued request — but only one. state.queued was set to a boolean,
+  // so this can recurse at most once before the next user interaction.
+  if (state.queued) {
+    logEvent('info', 'Executing queued transition request.');
+    transitionLights('queued');
   }
 }
 
-function forceAllRed(reason) {
-  dashboardState.ns = 'red';
-  dashboardState.ew = 'red';
-  dashboardState.transitioning = false;
-  dashboardState.queued = false;
-  renderDashboard();
-  logEvent('error', `Emergency fallback engaged (${reason}). All lights forced RED.`);
+
+// ─── Private state helpers ───────────────────────────────────────────────────
+
+/**
+ * _applyState() — the ONLY function that writes state.ns and state.ew.
+ *
+ * STATE PROPAGATION:
+ *   Every state change in the application flows through here, making it
+ *   the single authoritative point for signal state mutations:
+ *
+ *   transitionLights() / _forceAllRed()
+ *     └─► _applyState(ns, ew)  ← sole writer of state.ns / state.ew
+ *           └─► updateUI()     ← sole writer of DOM signal classes
+ *
+ * Validates the proposed (ns, ew) pair with isSafeState() before writing.
+ * Returns false (and logs an error) instead of applying an unsafe state.
+ *
+ * @returns {boolean} true if the state was applied; false if blocked
+ */
+function _applyState(ns, ew, reason) {
+  if (!isSafeState(ns, ew)) {
+    logEvent('error', `Unsafe state blocked (${reason}): NS=${ns.toUpperCase()} EW=${ew.toUpperCase()}.`);
+    return false;
+  }
+  state.ns = ns;
+  state.ew = ew;
+  updateUI();
+  return true;
 }
 
-function logEvent(level, message) {
-  const now = new Date().toLocaleTimeString();
-  const entry = document.createElement('article');
-  entry.className = `log-entry ${level}`;
-  entry.innerHTML = `<span class="log-time">${now}</span><span>${message}</span>`;
-  dashboardDom.logBody.prepend(entry);
+/**
+ * _forceAllRed() — emergency fallback called when an unexpected unsafe
+ * state is detected. Resets all signals to Red and clears both guards.
+ *
+ * After this runs, the system is in a known-safe inert state and the
+ * operator can initiate a fresh transition manually.
+ */
+function _forceAllRed(reason) {
+  state.ns           = 'red';
+  state.ew           = 'red';
+  state.transitioning = false;
+  state.queued        = false;
+  updateUI();
+  logEvent('error', `Emergency fallback (${reason}): all lights forced RED.`);
+}
 
-  while (dashboardDom.logBody.children.length > 80) {
-    dashboardDom.logBody.removeChild(dashboardDom.logBody.lastChild);
-  }
+
+// ─── init ────────────────────────────────────────────────────────────────────
+
+/**
+ * init() — entry point. Renders the initial state and wires up all event
+ * listeners. Called once after DOM readiness is confirmed.
+ *
+ * Keeping event listener registration here (not scattered across functions)
+ * means the full input wiring of the application is visible in one place.
+ *
+ * STATE PROPAGATION on startup:
+ *   init()
+ *     └─► updateUI()      renders initial state (NS green / EW red)
+ *           └─► _updateLamp()  sets CSS classes via classList.toggle()
+ */
+function init() {
+  updateUI();
+  dom.modeChip.textContent = 'MANUAL';
+  logEvent('info', 'System boot complete. North-South starts GREEN.');
+  logEvent('info', 'Manual mode active. Use Switch Direction to transition safely.');
+
+  // All clicks are routed through handleLogic(), which guards against
+  // race conditions before delegating to transitionLights().
+  dom.btnSwitch.addEventListener('click', () => handleLogic('manual-switch'));
+}
+
+
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
+//
+// Verify every required DOM node was resolved before calling init().
+// If a node is missing (e.g. due to an HTML change), we fail loudly here
+// rather than with a cryptic null-reference error deep inside a function.
+const DOM_READY = [
+  dom.ns.red, dom.ns.yellow, dom.ns.green, dom.ns.pill,
+  dom.ew.red, dom.ew.yellow, dom.ew.green, dom.ew.pill,
+  dom.btnSwitch, dom.modeChip, dom.logBody
+].every(Boolean);
+
+if (DOM_READY) {
+  init();
 }
