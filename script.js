@@ -1,561 +1,1195 @@
-/*
-================================================================
-  STATE OBJECT
-  A single source of truth for the entire dashboard.
-  No DOM property is ever read back to infer state;
-  the DOM is always a pure output of this object.
-================================================================
-*/
-const trafficSystem = {
-  /*
-    ns / ew hold the current signal colour for each corridor.
-    Possible values: 'red' | 'yellow' | 'green'
-  */
-  ns: 'green',
-  ew: 'red',
+import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, SMAAPreset } from 'https://esm.sh/postprocessing@6.35.4';
+import React, { useEffect, useRef } from 'https://esm.sh/react@18.3.1';
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
+import * as THREE from 'https://esm.sh/three@0.161.0';
 
-  /*
-    isTransitioning — the critical race-condition guard.
-    When true, all user input (manual button + auto-cycle timer)
-    is silently ignored until the async transition completes.
-    This ensures two corridors can never be Green/Yellow
-    simultaneously.
-  */
-  isTransitioning: false,
-
-  /*
-    autoCycle — whether the interval-based auto switcher is on.
-    cycleInterval — desired seconds between auto switches.
-    autoTimer — reference to the setInterval handle.
-  */
-  autoCycle: false,
-  cycleInterval: 8, // seconds
-
-  /*
-    metrics tracked at runtime
-  */
-  totalCycles: 0,
-  startTime: Date.now(),
-
-  /*
-    Countdown helpers — used to show the per-card timer badge.
-    These are updated inside the countdown setInterval.
-  */
-  nsCountdown: 0,
-  ewCountdown: 0,
+const DEFAULT_EFFECT_OPTIONS = {
+  onSpeedUp: () => {},
+  onSlowDown: () => {},
+  distortion: 'turbulentDistortion',
+  length: 400,
+  roadWidth: 10,
+  islandWidth: 2,
+  lanesPerRoad: 4,
+  fov: 90,
+  fovSpeedUp: 150,
+  speedUp: 2,
+  carLightsFade: 0.4,
+  totalSideLightSticks: 20,
+  lightPairsPerRoadWay: 40,
+  shoulderLinesWidthPercentage: 0.05,
+  brokenLinesWidthPercentage: 0.1,
+  brokenLinesLengthPercentage: 0.5,
+  lightStickWidth: [0.12, 0.5],
+  lightStickHeight: [1.3, 1.7],
+  movingAwaySpeed: [60, 80],
+  movingCloserSpeed: [-120, -160],
+  carLightsLength: [400 * 0.03, 400 * 0.2],
+  carLightsRadius: [0.05, 0.14],
+  carWidthPercentage: [0.3, 0.5],
+  carShiftX: [-0.8, 0.8],
+  carFloorSeparation: [0, 5],
+  colors: {
+    roadColor: 0x080808,
+    islandColor: 0x0a0a0a,
+    background: 0x000000,
+    shoulderLines: 0xffffff,
+    brokenLines: 0xffffff,
+    leftCars: [0xd856bf, 0x6750a2, 0xc247ac],
+    rightCars: [0x03b3c3, 0x0e5ea5, 0x324555],
+    sticks: 0x03b3c3
+  }
 };
 
-// ─── keep a reference to the auto-cycle setInterval handle ───
-let autoTimer = null;
+const Hyperspeed = ({ effectOptions = DEFAULT_EFFECT_OPTIONS }) => {
+  const hyperspeed = useRef(null);
+  const appRef = useRef(null);
 
-// ─── keep a reference to the countdown-display setInterval ───
-let countdownTimer = null;
+  useEffect(() => {
+    if (appRef.current) {
+      appRef.current.dispose();
+      appRef.current = null;
+      const container = hyperspeed.current;
+      if (container) {
+        while (container.firstChild) {
+          container.removeChild(container.firstChild);
+        }
+      }
+    }
+    const mountainUniforms = {
+      uFreq: { value: new THREE.Vector3(3, 6, 10) },
+      uAmp: { value: new THREE.Vector3(30, 30, 20) }
+    };
 
-/*
-================================================================
-  DOM REFERENCES
-  Gathered once at startup; never queried again inside loops.
-================================================================
-*/
-const DOM = {
-  // traffic light bulbs
-  nsBulbs:  { red: document.querySelector('#ns-red'),    yellow: document.querySelector('#ns-yellow'),    green: document.querySelector('#ns-green')    },
-  ewBulbs:  { red: document.querySelector('#ew-red'),    yellow: document.querySelector('#ew-yellow'),    green: document.querySelector('#ew-green')    },
+    const xyUniforms = {
+      uFreq: { value: new THREE.Vector2(5, 2) },
+      uAmp: { value: new THREE.Vector2(25, 15) }
+    };
 
-  // intersection wrapper cards (for border-glow class)
-  cardNS:   document.querySelector('#card-ns'),
-  cardEW:   document.querySelector('#card-ew'),
+    const LongRaceUniforms = {
+      uFreq: { value: new THREE.Vector2(2, 3) },
+      uAmp: { value: new THREE.Vector2(35, 10) }
+    };
 
-  // state badges below each light
-  badgeNS:  document.querySelector('#badge-ns'),
-  badgeEW:  document.querySelector('#badge-ew'),
+    const turbulentUniforms = {
+      uFreq: { value: new THREE.Vector4(4, 8, 8, 1) },
+      uAmp: { value: new THREE.Vector4(25, 5, 10, 10) }
+    };
 
-  // countdown timers per card
-  timerNS:  document.querySelector('#timer-ns'),
-  timerEW:  document.querySelector('#timer-ew'),
+    const deepUniforms = {
+      uFreq: { value: new THREE.Vector2(4, 8) },
+      uAmp: { value: new THREE.Vector2(10, 20) },
+      uPowY: { value: new THREE.Vector2(20, 2) }
+    };
 
-  // mini map circles
-  mapNS:    { red: document.querySelector('#map-ns-red'), yellow: document.querySelector('#map-ns-yellow'), green: document.querySelector('#map-ns-green') },
-  mapEW:    { red: document.querySelector('#map-ew-red'), yellow: document.querySelector('#map-ew-yellow'), green: document.querySelector('#map-ew-green') },
+    let nsin = val => Math.sin(val) * 0.5 + 0.5;
 
-  // animated cars
-  carNS:    document.querySelector('#car-ns-group'),
-  carEW:    document.querySelector('#car-ew-group'),
+    const distortions = {
+      mountainDistortion: {
+        uniforms: mountainUniforms,
+        getDistortion: `
+          uniform vec3 uAmp;
+          uniform vec3 uFreq;
+          #define PI 3.14159265358979
+          float nsin(float val){
+            return sin(val) * 0.5 + 0.5;
+          }
+          vec3 getDistortion(float progress){
+            float movementProgressFix = 0.02;
+            return vec3( 
+              cos(progress * PI * uFreq.x + uTime) * uAmp.x - cos(movementProgressFix * PI * uFreq.x + uTime) * uAmp.x,
+              nsin(progress * PI * uFreq.y + uTime) * uAmp.y - nsin(movementProgressFix * PI * uFreq.y + uTime) * uAmp.y,
+              nsin(progress * PI * uFreq.z + uTime) * uAmp.z - nsin(movementProgressFix * PI * uFreq.z + uTime) * uAmp.z
+            );
+          }
+        `,
+        getJS: (progress, time) => {
+          let movementProgressFix = 0.02;
+          let uFreq = mountainUniforms.uFreq.value;
+          let uAmp = mountainUniforms.uAmp.value;
+          let distortion = new THREE.Vector3(
+            Math.cos(progress * Math.PI * uFreq.x + time) * uAmp.x -
+              Math.cos(movementProgressFix * Math.PI * uFreq.x + time) * uAmp.x,
+            nsin(progress * Math.PI * uFreq.y + time) * uAmp.y -
+              nsin(movementProgressFix * Math.PI * uFreq.y + time) * uAmp.y,
+            nsin(progress * Math.PI * uFreq.z + time) * uAmp.z -
+              nsin(movementProgressFix * Math.PI * uFreq.z + time) * uAmp.z
+          );
+          let lookAtAmp = new THREE.Vector3(2, 2, 2);
+          let lookAtOffset = new THREE.Vector3(0, 0, -5);
+          return distortion.multiply(lookAtAmp).add(lookAtOffset);
+        }
+      },
+      xyDistortion: {
+        uniforms: xyUniforms,
+        getDistortion: `
+          uniform vec2 uFreq;
+          uniform vec2 uAmp;
+          #define PI 3.14159265358979
+          vec3 getDistortion(float progress){
+            float movementProgressFix = 0.02;
+            return vec3( 
+              cos(progress * PI * uFreq.x + uTime) * uAmp.x - cos(movementProgressFix * PI * uFreq.x + uTime) * uAmp.x,
+              sin(progress * PI * uFreq.y + PI/2. + uTime) * uAmp.y - sin(movementProgressFix * PI * uFreq.y + PI/2. + uTime) * uAmp.y,
+              0.
+            );
+          }
+        `,
+        getJS: (progress, time) => {
+          let movementProgressFix = 0.02;
+          let uFreq = xyUniforms.uFreq.value;
+          let uAmp = xyUniforms.uAmp.value;
+          let distortion = new THREE.Vector3(
+            Math.cos(progress * Math.PI * uFreq.x + time) * uAmp.x -
+              Math.cos(movementProgressFix * Math.PI * uFreq.x + time) * uAmp.x,
+            Math.sin(progress * Math.PI * uFreq.y + time + Math.PI / 2) * uAmp.y -
+              Math.sin(movementProgressFix * Math.PI * uFreq.y + time + Math.PI / 2) * uAmp.y,
+            0
+          );
+          let lookAtAmp = new THREE.Vector3(2, 0.4, 1);
+          let lookAtOffset = new THREE.Vector3(0, 0, -3);
+          return distortion.multiply(lookAtAmp).add(lookAtOffset);
+        }
+      },
+      LongRaceDistortion: {
+        uniforms: LongRaceUniforms,
+        getDistortion: `
+          uniform vec2 uFreq;
+          uniform vec2 uAmp;
+          #define PI 3.14159265358979
+          vec3 getDistortion(float progress){
+            float camProgress = 0.0125;
+            return vec3( 
+              sin(progress * PI * uFreq.x + uTime) * uAmp.x - sin(camProgress * PI * uFreq.x + uTime) * uAmp.x,
+              sin(progress * PI * uFreq.y + uTime) * uAmp.y - sin(camProgress * PI * uFreq.y + uTime) * uAmp.y,
+              0.
+            );
+          }
+        `,
+        getJS: (progress, time) => {
+          let camProgress = 0.0125;
+          let uFreq = LongRaceUniforms.uFreq.value;
+          let uAmp = LongRaceUniforms.uAmp.value;
+          let distortion = new THREE.Vector3(
+            Math.sin(progress * Math.PI * uFreq.x + time) * uAmp.x -
+              Math.sin(camProgress * Math.PI * uFreq.x + time) * uAmp.x,
+            Math.sin(progress * Math.PI * uFreq.y + time) * uAmp.y -
+              Math.sin(camProgress * Math.PI * uFreq.y + time) * uAmp.y,
+            0
+          );
+          let lookAtAmp = new THREE.Vector3(1, 1, 0);
+          let lookAtOffset = new THREE.Vector3(0, 0, -5);
+          return distortion.multiply(lookAtAmp).add(lookAtOffset);
+        }
+      },
+      turbulentDistortion: {
+        uniforms: turbulentUniforms,
+        getDistortion: `
+          uniform vec4 uFreq;
+          uniform vec4 uAmp;
+          float nsin(float val){
+            return sin(val) * 0.5 + 0.5;
+          }
+          #define PI 3.14159265358979
+          float getDistortionX(float progress){
+            return (
+              cos(PI * progress * uFreq.r + uTime) * uAmp.r +
+              pow(cos(PI * progress * uFreq.g + uTime * (uFreq.g / uFreq.r)), 2. ) * uAmp.g
+            );
+          }
+          float getDistortionY(float progress){
+            return (
+              -nsin(PI * progress * uFreq.b + uTime) * uAmp.b +
+              -pow(nsin(PI * progress * uFreq.a + uTime / (uFreq.b / uFreq.a)), 5.) * uAmp.a
+            );
+          }
+          vec3 getDistortion(float progress){
+            return vec3(
+              getDistortionX(progress) - getDistortionX(0.0125),
+              getDistortionY(progress) - getDistortionY(0.0125),
+              0.
+            );
+          }
+        `,
+        getJS: (progress, time) => {
+          const uFreq = turbulentUniforms.uFreq.value;
+          const uAmp = turbulentUniforms.uAmp.value;
 
-  // controls
-  btnSwitch:    document.querySelector('#btn-switch'),
-  autoToggle:   document.querySelector('#auto-toggle'),
-  intervalSlider: document.querySelector('#interval-slider'),
-  sliderDisplay:  document.querySelector('#slider-display'),
+          const getX = p =>
+            Math.cos(Math.PI * p * uFreq.x + time) * uAmp.x +
+            Math.pow(Math.cos(Math.PI * p * uFreq.y + time * (uFreq.y / uFreq.x)), 2) * uAmp.y;
 
-  // status chips
-  chipMode:       document.querySelector('#chip-mode'),
-  chipTransition: document.querySelector('#chip-transition'),
+          const getY = p =>
+            -nsin(Math.PI * p * uFreq.z + time) * uAmp.z -
+            Math.pow(nsin(Math.PI * p * uFreq.w + time / (uFreq.z / uFreq.w)), 5) * uAmp.w;
 
-  // metrics
-  metricCycles: document.querySelector('#metric-cycles'),
-  metricUptime: document.querySelector('#metric-uptime'),
-  metricActive: document.querySelector('#metric-active'),
+          let distortion = new THREE.Vector3(
+            getX(progress) - getX(progress + 0.007),
+            getY(progress) - getY(progress + 0.007),
+            0
+          );
+          let lookAtAmp = new THREE.Vector3(-2, -5, 0);
+          let lookAtOffset = new THREE.Vector3(0, 0, -10);
+          return distortion.multiply(lookAtAmp).add(lookAtOffset);
+        }
+      },
+      turbulentDistortionStill: {
+        uniforms: turbulentUniforms,
+        getDistortion: `
+          uniform vec4 uFreq;
+          uniform vec4 uAmp;
+          float nsin(float val){
+            return sin(val) * 0.5 + 0.5;
+          }
+          #define PI 3.14159265358979
+          float getDistortionX(float progress){
+            return (
+              cos(PI * progress * uFreq.r) * uAmp.r +
+              pow(cos(PI * progress * uFreq.g * (uFreq.g / uFreq.r)), 2. ) * uAmp.g
+            );
+          }
+          float getDistortionY(float progress){
+            return (
+              -nsin(PI * progress * uFreq.b) * uAmp.b +
+              -pow(nsin(PI * progress * uFreq.a / (uFreq.b / uFreq.a)), 5.) * uAmp.a
+            );
+          }
+          vec3 getDistortion(float progress){
+            return vec3(
+              getDistortionX(progress) - getDistortionX(0.02),
+              getDistortionY(progress) - getDistortionY(0.02),
+              0.
+            );
+          }
+        `
+      },
+      deepDistortionStill: {
+        uniforms: deepUniforms,
+        getDistortion: `
+          uniform vec4 uFreq;
+          uniform vec4 uAmp;
+          uniform vec2 uPowY;
+          float nsin(float val){
+            return sin(val) * 0.5 + 0.5;
+          }
+          #define PI 3.14159265358979
+          float getDistortionX(float progress){
+            return (
+              sin(progress * PI * uFreq.x) * uAmp.x * 2.
+            );
+          }
+          float getDistortionY(float progress){
+            return (
+              pow(abs(progress * uPowY.x), uPowY.y) + sin(progress * PI * uFreq.y) * uAmp.y
+            );
+          }
+          vec3 getDistortion(float progress){
+            return vec3(
+              getDistortionX(progress) - getDistortionX(0.02),
+              getDistortionY(progress) - getDistortionY(0.05),
+              0.
+            );
+          }
+        `
+      },
+      deepDistortion: {
+        uniforms: deepUniforms,
+        getDistortion: `
+          uniform vec4 uFreq;
+          uniform vec4 uAmp;
+          uniform vec2 uPowY;
+          float nsin(float val){
+            return sin(val) * 0.5 + 0.5;
+          }
+          #define PI 3.14159265358979
+          float getDistortionX(float progress){
+            return (
+              sin(progress * PI * uFreq.x + uTime) * uAmp.x
+            );
+          }
+          float getDistortionY(float progress){
+            return (
+              pow(abs(progress * uPowY.x), uPowY.y) + sin(progress * PI * uFreq.y + uTime) * uAmp.y
+            );
+          }
+          vec3 getDistortion(float progress){
+            return vec3(
+              getDistortionX(progress) - getDistortionX(0.02),
+              getDistortionY(progress) - getDistortionY(0.02),
+              0.
+            );
+          }
+        `,
+        getJS: (progress, time) => {
+          const uFreq = deepUniforms.uFreq.value;
+          const uAmp = deepUniforms.uAmp.value;
+          const uPowY = deepUniforms.uPowY.value;
 
-  // log
-  logBody:     document.querySelector('#log-body'),
-  btnClearLogs: document.querySelector('#btn-clear-logs'),
+          const getX = p => Math.sin(p * Math.PI * uFreq.x + time) * uAmp.x;
+          const getY = p => Math.pow(p * uPowY.x, uPowY.y) + Math.sin(p * Math.PI * uFreq.y + time) * uAmp.y;
 
-  // clock display
-  clock: document.querySelector('#clock'),
+          let distortion = new THREE.Vector3(
+            getX(progress) - getX(progress + 0.01),
+            getY(progress) - getY(progress + 0.01),
+            0
+          );
+          let lookAtAmp = new THREE.Vector3(-2, -4, 0);
+          let lookAtOffset = new THREE.Vector3(0, 0, -10);
+          return distortion.multiply(lookAtAmp).add(lookAtOffset);
+        }
+      }
+    };
+
+    class App {
+      constructor(container, options = {}) {
+        this.options = options;
+        if (this.options.distortion == null) {
+          this.options.distortion = {
+            uniforms: distortion_uniforms,
+            getDistortion: distortion_vertex
+          };
+        }
+        this.container = container;
+        this.hasValidSize = false;
+
+        const initW = Math.max(1, container.offsetWidth);
+        const initH = Math.max(1, container.offsetHeight);
+
+        this.renderer = new THREE.WebGLRenderer({
+          antialias: false,
+          alpha: true
+        });
+        this.renderer.setSize(initW, initH, false);
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.composer = new EffectComposer(this.renderer);
+        container.append(this.renderer.domElement);
+
+        this.camera = new THREE.PerspectiveCamera(options.fov, initW / initH, 0.1, 10000);
+        this.camera.position.z = -5;
+        this.camera.position.y = 8;
+        this.camera.position.x = 0;
+        this.scene = new THREE.Scene();
+        this.scene.background = null;
+
+        let fog = new THREE.Fog(options.colors.background, options.length * 0.2, options.length * 500);
+        this.scene.fog = fog;
+        this.fogUniforms = {
+          fogColor: { value: fog.color },
+          fogNear: { value: fog.near },
+          fogFar: { value: fog.far }
+        };
+        this.clock = new THREE.Clock();
+        this.assets = {};
+        this.disposed = false;
+
+        this.road = new Road(this, options);
+        this.leftCarLights = new CarLights(
+          this,
+          options,
+          options.colors.leftCars,
+          options.movingAwaySpeed,
+          new THREE.Vector2(0, 1 - options.carLightsFade)
+        );
+        this.rightCarLights = new CarLights(
+          this,
+          options,
+          options.colors.rightCars,
+          options.movingCloserSpeed,
+          new THREE.Vector2(1, 0 + options.carLightsFade)
+        );
+        this.leftSticks = new LightsSticks(this, options);
+
+        this.fovTarget = options.fov;
+        this.speedUpTarget = 0;
+        this.speedUp = 0;
+        this.timeOffset = 0;
+
+        this.tick = this.tick.bind(this);
+        this.init = this.init.bind(this);
+        this.setSize = this.setSize.bind(this);
+        this.onMouseDown = this.onMouseDown.bind(this);
+        this.onMouseUp = this.onMouseUp.bind(this);
+
+        this.onTouchStart = this.onTouchStart.bind(this);
+        this.onTouchEnd = this.onTouchEnd.bind(this);
+        this.onContextMenu = this.onContextMenu.bind(this);
+
+        this.onWindowResize = this.onWindowResize.bind(this);
+        window.addEventListener('resize', this.onWindowResize);
+
+        if (container.offsetWidth > 0 && container.offsetHeight > 0) {
+          this.hasValidSize = true;
+        }
+      }
+
+      onWindowResize() {
+        const width = this.container.offsetWidth;
+        const height = this.container.offsetHeight;
+
+        if (width <= 0 || height <= 0) {
+          this.hasValidSize = false;
+          return;
+        }
+
+        this.renderer.setSize(width, height);
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this.composer.setSize(width, height);
+        this.hasValidSize = true;
+      }
+
+      initPasses() {
+        this.renderPass = new RenderPass(this.scene, this.camera);
+        this.bloomPass = new EffectPass(
+          this.camera,
+          new BloomEffect({
+            luminanceThreshold: 0.2,
+            luminanceSmoothing: 0,
+            resolutionScale: 1
+          })
+        );
+
+        const smaaPass = new EffectPass(
+          this.camera,
+          new SMAAEffect({
+            preset: SMAAPreset.MEDIUM,
+            searchImage: SMAAEffect.searchImageDataURL,
+            areaImage: SMAAEffect.areaImageDataURL
+          })
+        );
+        this.renderPass.renderToScreen = false;
+        this.bloomPass.renderToScreen = false;
+        smaaPass.renderToScreen = true;
+        this.composer.addPass(this.renderPass);
+        this.composer.addPass(this.bloomPass);
+        this.composer.addPass(smaaPass);
+      }
+
+      loadAssets() {
+        const assets = this.assets;
+        return new Promise(resolve => {
+          const manager = new THREE.LoadingManager(resolve);
+
+          const searchImage = new Image();
+          const areaImage = new Image();
+          assets.smaa = {};
+          searchImage.addEventListener('load', function () {
+            assets.smaa.search = this;
+            manager.itemEnd('smaa-search');
+          });
+
+          areaImage.addEventListener('load', function () {
+            assets.smaa.area = this;
+            manager.itemEnd('smaa-area');
+          });
+          manager.itemStart('smaa-search');
+          manager.itemStart('smaa-area');
+
+          searchImage.src = SMAAEffect.searchImageDataURL;
+          areaImage.src = SMAAEffect.areaImageDataURL;
+        });
+      }
+
+      init() {
+        this.initPasses();
+        const options = this.options;
+        this.road.init();
+        this.leftCarLights.init();
+
+        this.leftCarLights.mesh.position.setX(-options.roadWidth / 2 - options.islandWidth / 2);
+        this.rightCarLights.init();
+        this.rightCarLights.mesh.position.setX(options.roadWidth / 2 + options.islandWidth / 2);
+        this.leftSticks.init();
+        this.leftSticks.mesh.position.setX(-(options.roadWidth + options.islandWidth / 2));
+
+        this.container.addEventListener('mousedown', this.onMouseDown);
+        this.container.addEventListener('mouseup', this.onMouseUp);
+        this.container.addEventListener('mouseout', this.onMouseUp);
+
+        this.container.addEventListener('touchstart', this.onTouchStart, { passive: true });
+        this.container.addEventListener('touchend', this.onTouchEnd, { passive: true });
+        this.container.addEventListener('touchcancel', this.onTouchEnd, { passive: true });
+
+        this.container.addEventListener('contextmenu', this.onContextMenu);
+
+        this.tick();
+      }
+
+      onMouseDown(ev) {
+        if (this.options.onSpeedUp) this.options.onSpeedUp(ev);
+        this.fovTarget = this.options.fovSpeedUp;
+        this.speedUpTarget = this.options.speedUp;
+      }
+
+      onMouseUp(ev) {
+        if (this.options.onSlowDown) this.options.onSlowDown(ev);
+        this.fovTarget = this.options.fov;
+        this.speedUpTarget = 0;
+      }
+
+      onTouchStart(ev) {
+        if (this.options.onSpeedUp) this.options.onSpeedUp(ev);
+        this.fovTarget = this.options.fovSpeedUp;
+        this.speedUpTarget = this.options.speedUp;
+      }
+
+      onTouchEnd(ev) {
+        if (this.options.onSlowDown) this.options.onSlowDown(ev);
+        this.fovTarget = this.options.fov;
+        this.speedUpTarget = 0;
+      }
+
+      onContextMenu(ev) {
+        ev.preventDefault();
+      }
+
+      update(delta) {
+        let lerpPercentage = Math.exp(-(-60 * Math.log2(1 - 0.1)) * delta);
+        this.speedUp += lerp(this.speedUp, this.speedUpTarget, lerpPercentage, 0.00001);
+        this.timeOffset += this.speedUp * delta;
+
+        let time = this.clock.elapsedTime + this.timeOffset;
+
+        this.rightCarLights.update(time);
+        this.leftCarLights.update(time);
+        this.leftSticks.update(time);
+        this.road.update(time);
+
+        let updateCamera = false;
+        let fovChange = lerp(this.camera.fov, this.fovTarget, lerpPercentage);
+        if (fovChange !== 0) {
+          this.camera.fov += fovChange * delta * 6;
+          updateCamera = true;
+        }
+
+        if (this.options.distortion.getJS) {
+          const distortion = this.options.distortion.getJS(0.025, time);
+
+          this.camera.lookAt(
+            new THREE.Vector3(
+              this.camera.position.x + distortion.x,
+              this.camera.position.y + distortion.y,
+              this.camera.position.z + distortion.z
+            )
+          );
+          updateCamera = true;
+        }
+        if (updateCamera) {
+          this.camera.updateProjectionMatrix();
+        }
+      }
+
+      render(delta) {
+        this.composer.render(delta);
+      }
+
+      dispose() {
+        this.disposed = true;
+
+        if (this.scene) {
+          this.scene.traverse(object => {
+            const obj = object;
+            if (!obj.isMesh) return;
+
+            if (obj.geometry) obj.geometry.dispose();
+
+            if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach(material => material.dispose());
+              } else {
+                obj.material.dispose();
+              }
+            }
+          });
+          this.scene.clear();
+        }
+
+        if (this.renderer) {
+          this.renderer.dispose();
+          this.renderer.forceContextLoss();
+          if (this.renderer.domElement && this.renderer.domElement.parentNode) {
+            this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+          }
+        }
+        if (this.composer) {
+          this.composer.dispose();
+        }
+
+        window.removeEventListener('resize', this.onWindowResize);
+        if (this.container) {
+          this.container.removeEventListener('mousedown', this.onMouseDown);
+          this.container.removeEventListener('mouseup', this.onMouseUp);
+          this.container.removeEventListener('mouseout', this.onMouseUp);
+
+          this.container.removeEventListener('touchstart', this.onTouchStart);
+          this.container.removeEventListener('touchend', this.onTouchEnd);
+          this.container.removeEventListener('touchcancel', this.onTouchEnd);
+          this.container.removeEventListener('contextmenu', this.onContextMenu);
+        }
+      }
+
+      setSize(width, height, updateStyles) {
+        if (width <= 0 || height <= 0) {
+          this.hasValidSize = false;
+          return;
+        }
+        this.composer.setSize(width, height, updateStyles);
+        this.hasValidSize = true;
+      }
+
+      tick() {
+        if (this.disposed) return;
+
+        if (!this.hasValidSize) {
+          const w = this.container.offsetWidth;
+          const h = this.container.offsetHeight;
+          if (w > 0 && h > 0) {
+            this.renderer.setSize(w, h, false);
+            this.camera.aspect = w / h;
+            this.camera.updateProjectionMatrix();
+            this.composer.setSize(w, h);
+            this.hasValidSize = true;
+          } else {
+            requestAnimationFrame(this.tick);
+            return;
+          }
+        }
+
+        if (resizeRendererToDisplaySize(this.renderer, this.setSize)) {
+          const canvas = this.renderer.domElement;
+          if (this.hasValidSize) {
+            this.camera.aspect = canvas.clientWidth / canvas.clientHeight;
+            this.camera.updateProjectionMatrix();
+          }
+        }
+
+        if (this.hasValidSize) {
+          const delta = this.clock.getDelta();
+          this.render(delta);
+          this.update(delta);
+        }
+
+        requestAnimationFrame(this.tick);
+      }
+    }
+
+    const distortion_uniforms = {
+      uDistortionX: { value: new THREE.Vector2(80, 3) },
+      uDistortionY: { value: new THREE.Vector2(-40, 2.5) }
+    };
+
+    const distortion_vertex = `
+      #define PI 3.14159265358979
+      uniform vec2 uDistortionX;
+      uniform vec2 uDistortionY;
+      float nsin(float val){
+        return sin(val) * 0.5 + 0.5;
+      }
+      vec3 getDistortion(float progress){
+        progress = clamp(progress, 0., 1.);
+        float xAmp = uDistortionX.r;
+        float xFreq = uDistortionX.g;
+        float yAmp = uDistortionY.r;
+        float yFreq = uDistortionY.g;
+        return vec3( 
+          xAmp * nsin(progress * PI * xFreq - PI / 2.),
+          yAmp * nsin(progress * PI * yFreq - PI / 2.),
+          0.
+        );
+      }
+    `;
+
+    const random = base => {
+      if (Array.isArray(base)) return Math.random() * (base[1] - base[0]) + base[0];
+      return Math.random() * base;
+    };
+
+    const pickRandom = arr => {
+      if (Array.isArray(arr)) return arr[Math.floor(Math.random() * arr.length)];
+      return arr;
+    };
+
+    function lerp(current, target, speed = 0.1, limit = 0.001) {
+      let change = (target - current) * speed;
+      if (Math.abs(change) < limit) {
+        change = target - current;
+      }
+      return change;
+    }
+
+    class CarLights {
+      constructor(webgl, options, colors, speed, fade) {
+        this.webgl = webgl;
+        this.options = options;
+        this.colors = colors;
+        this.speed = speed;
+        this.fade = fade;
+      }
+
+      init() {
+        const options = this.options;
+        let curve = new THREE.LineCurve3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1));
+        let geometry = new THREE.TubeGeometry(curve, 40, 1, 8, false);
+
+        let instanced = new THREE.InstancedBufferGeometry().copy(geometry);
+        instanced.instanceCount = options.lightPairsPerRoadWay * 2;
+
+        let laneWidth = options.roadWidth / options.lanesPerRoad;
+
+        let aOffset = [];
+        let aMetrics = [];
+        let aColor = [];
+
+        let colors = this.colors;
+        if (Array.isArray(colors)) {
+          colors = colors.map(c => new THREE.Color(c));
+        } else {
+          colors = new THREE.Color(colors);
+        }
+
+        for (let i = 0; i < options.lightPairsPerRoadWay; i++) {
+          let radius = random(options.carLightsRadius);
+          let length = random(options.carLightsLength);
+          let speed = random(this.speed);
+
+          let carLane = i % options.lanesPerRoad;
+          let laneX = carLane * laneWidth - options.roadWidth / 2 + laneWidth / 2;
+
+          let carWidth = random(options.carWidthPercentage) * laneWidth;
+          let carShiftX = random(options.carShiftX) * laneWidth;
+          laneX += carShiftX;
+
+          let offsetY = random(options.carFloorSeparation) + radius * 1.3;
+
+          let offsetZ = -random(options.length);
+
+          aOffset.push(laneX - carWidth / 2);
+          aOffset.push(offsetY);
+          aOffset.push(offsetZ);
+
+          aOffset.push(laneX + carWidth / 2);
+          aOffset.push(offsetY);
+          aOffset.push(offsetZ);
+
+          aMetrics.push(radius);
+          aMetrics.push(length);
+          aMetrics.push(speed);
+
+          aMetrics.push(radius);
+          aMetrics.push(length);
+          aMetrics.push(speed);
+
+          let color = pickRandom(colors);
+          aColor.push(color.r);
+          aColor.push(color.g);
+          aColor.push(color.b);
+
+          aColor.push(color.r);
+          aColor.push(color.g);
+          aColor.push(color.b);
+        }
+
+        instanced.setAttribute('aOffset', new THREE.InstancedBufferAttribute(new Float32Array(aOffset), 3, false));
+        instanced.setAttribute('aMetrics', new THREE.InstancedBufferAttribute(new Float32Array(aMetrics), 3, false));
+        instanced.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(aColor), 3, false));
+
+        let material = new THREE.ShaderMaterial({
+          fragmentShader: carLightsFragment,
+          vertexShader: carLightsVertex,
+          transparent: true,
+          uniforms: Object.assign(
+            {
+              uTime: { value: 0 },
+              uTravelLength: { value: options.length },
+              uFade: { value: this.fade }
+            },
+            this.webgl.fogUniforms,
+            options.distortion.uniforms
+          )
+        });
+
+        material.onBeforeCompile = shader => {
+          shader.vertexShader = shader.vertexShader.replace(
+            '#include <getDistortion_vertex>',
+            options.distortion.getDistortion
+          );
+        };
+
+        let mesh = new THREE.Mesh(instanced, material);
+        mesh.frustumCulled = false;
+        this.webgl.scene.add(mesh);
+        this.mesh = mesh;
+      }
+
+      update(time) {
+        this.mesh.material.uniforms.uTime.value = time;
+      }
+    }
+
+    const carLightsFragment = `
+      #define USE_FOG;
+      ${THREE.ShaderChunk['fog_pars_fragment']}
+      varying vec3 vColor;
+      varying vec2 vUv; 
+      uniform vec2 uFade;
+      void main() {
+        vec3 color = vec3(vColor);
+        float alpha = smoothstep(uFade.x, uFade.y, vUv.x);
+        gl_FragColor = vec4(color, alpha);
+        if (gl_FragColor.a < 0.0001) discard;
+        ${THREE.ShaderChunk['fog_fragment']}
+      }
+    `;
+
+    const carLightsVertex = `
+      #define USE_FOG;
+      ${THREE.ShaderChunk['fog_pars_vertex']}
+      attribute vec3 aOffset;
+      attribute vec3 aMetrics;
+      attribute vec3 aColor;
+      uniform float uTravelLength;
+      uniform float uTime;
+      varying vec2 vUv; 
+      varying vec3 vColor; 
+      #include <getDistortion_vertex>
+      void main() {
+        vec3 transformed = position.xyz;
+        float radius = aMetrics.r;
+        float myLength = aMetrics.g;
+        float speed = aMetrics.b;
+
+        transformed.xy *= radius;
+        transformed.z *= myLength;
+
+        transformed.z += myLength - mod(uTime * speed + aOffset.z, uTravelLength);
+        transformed.xy += aOffset.xy;
+
+        float progress = abs(transformed.z / uTravelLength);
+        transformed.xyz += getDistortion(progress);
+
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.);
+        gl_Position = projectionMatrix * mvPosition;
+        vUv = uv;
+        vColor = aColor;
+        ${THREE.ShaderChunk['fog_vertex']}
+      }
+    `;
+
+    class LightsSticks {
+      constructor(webgl, options) {
+        this.webgl = webgl;
+        this.options = options;
+      }
+
+      init() {
+        const options = this.options;
+        const geometry = new THREE.PlaneGeometry(1, 1);
+        let instanced = new THREE.InstancedBufferGeometry().copy(geometry);
+        let totalSticks = options.totalSideLightSticks;
+        instanced.instanceCount = totalSticks;
+
+        let stickoffset = options.length / (totalSticks - 1);
+        const aOffset = [];
+        const aColor = [];
+        const aMetrics = [];
+
+        let colors = options.colors.sticks;
+        if (Array.isArray(colors)) {
+          colors = colors.map(c => new THREE.Color(c));
+        } else {
+          colors = new THREE.Color(colors);
+        }
+
+        for (let i = 0; i < totalSticks; i++) {
+          let width = random(options.lightStickWidth);
+          let height = random(options.lightStickHeight);
+          aOffset.push((i - 1) * stickoffset * 2 + stickoffset * Math.random());
+
+          let color = pickRandom(colors);
+          aColor.push(color.r);
+          aColor.push(color.g);
+          aColor.push(color.b);
+
+          aMetrics.push(width);
+          aMetrics.push(height);
+        }
+
+        instanced.setAttribute('aOffset', new THREE.InstancedBufferAttribute(new Float32Array(aOffset), 1, false));
+        instanced.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(aColor), 3, false));
+        instanced.setAttribute('aMetrics', new THREE.InstancedBufferAttribute(new Float32Array(aMetrics), 2, false));
+
+        const material = new THREE.ShaderMaterial({
+          fragmentShader: sideSticksFragment,
+          vertexShader: sideSticksVertex,
+          side: THREE.DoubleSide,
+          uniforms: Object.assign(
+            {
+              uTravelLength: { value: options.length },
+              uTime: { value: 0 }
+            },
+            this.webgl.fogUniforms,
+            options.distortion.uniforms
+          )
+        });
+
+        material.onBeforeCompile = shader => {
+          shader.vertexShader = shader.vertexShader.replace(
+            '#include <getDistortion_vertex>',
+            options.distortion.getDistortion
+          );
+        };
+
+        const mesh = new THREE.Mesh(instanced, material);
+        mesh.frustumCulled = false;
+        this.webgl.scene.add(mesh);
+        this.mesh = mesh;
+      }
+
+      update(time) {
+        this.mesh.material.uniforms.uTime.value = time;
+      }
+    }
+
+    const sideSticksVertex = `
+      #define USE_FOG;
+      ${THREE.ShaderChunk['fog_pars_vertex']}
+      attribute float aOffset;
+      attribute vec3 aColor;
+      attribute vec2 aMetrics;
+      uniform float uTravelLength;
+      uniform float uTime;
+      varying vec3 vColor;
+      mat4 rotationY( in float angle ) {
+        return mat4(	cos(angle),		0,		sin(angle),	0,
+                     0,		1.0,			 0,	0,
+                -sin(angle),	0,		cos(angle),	0,
+                0, 		0,				0,	1);
+      }
+      #include <getDistortion_vertex>
+      void main(){
+        vec3 transformed = position.xyz;
+        float width = aMetrics.x;
+        float height = aMetrics.y;
+
+        transformed.xy *= vec2(width, height);
+        float time = mod(uTime * 60. * 2. + aOffset, uTravelLength);
+
+        transformed = (rotationY(3.14/2.) * vec4(transformed,1.)).xyz;
+
+        transformed.z += - uTravelLength + time;
+
+        float progress = abs(transformed.z / uTravelLength);
+        transformed.xyz += getDistortion(progress);
+
+        transformed.y += height / 2.;
+        transformed.x += -width / 2.;
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.);
+        gl_Position = projectionMatrix * mvPosition;
+        vColor = aColor;
+        ${THREE.ShaderChunk['fog_vertex']}
+      }
+    `;
+
+    const sideSticksFragment = `
+      #define USE_FOG;
+      ${THREE.ShaderChunk['fog_pars_fragment']}
+      varying vec3 vColor;
+      void main(){
+        vec3 color = vec3(vColor);
+        gl_FragColor = vec4(color,1.);
+        ${THREE.ShaderChunk['fog_fragment']}
+      }
+    `;
+
+    class Road {
+      constructor(webgl, options) {
+        this.webgl = webgl;
+        this.options = options;
+        this.uTime = { value: 0 };
+      }
+
+      createPlane(side, width, isRoad) {
+        const options = this.options;
+        let segments = 100;
+        const geometry = new THREE.PlaneGeometry(
+          isRoad ? options.roadWidth : options.islandWidth,
+          options.length,
+          20,
+          segments
+        );
+        let uniforms = {
+          uTravelLength: { value: options.length },
+          uColor: { value: new THREE.Color(isRoad ? options.colors.roadColor : options.colors.islandColor) },
+          uTime: this.uTime
+        };
+
+        if (isRoad) {
+          uniforms = Object.assign(uniforms, {
+            uLanes: { value: options.lanesPerRoad },
+            uBrokenLinesColor: { value: new THREE.Color(options.colors.brokenLines) },
+            uShoulderLinesColor: { value: new THREE.Color(options.colors.shoulderLines) },
+            uShoulderLinesWidthPercentage: { value: options.shoulderLinesWidthPercentage },
+            uBrokenLinesLengthPercentage: { value: options.brokenLinesLengthPercentage },
+            uBrokenLinesWidthPercentage: { value: options.brokenLinesWidthPercentage }
+          });
+        }
+
+        const material = new THREE.ShaderMaterial({
+          fragmentShader: isRoad ? roadFragment : islandFragment,
+          vertexShader: roadVertex,
+          side: THREE.DoubleSide,
+          uniforms: Object.assign(uniforms, this.webgl.fogUniforms, options.distortion.uniforms)
+        });
+
+        material.onBeforeCompile = shader => {
+          shader.vertexShader = shader.vertexShader.replace(
+            '#include <getDistortion_vertex>',
+            options.distortion.getDistortion
+          );
+        };
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.z = -options.length / 2;
+        mesh.position.x += (this.options.islandWidth / 2 + options.roadWidth / 2) * side;
+        this.webgl.scene.add(mesh);
+
+        return mesh;
+      }
+
+      init() {
+        this.leftRoadWay = this.createPlane(-1, this.options.roadWidth, true);
+        this.rightRoadWay = this.createPlane(1, this.options.roadWidth, true);
+        this.island = this.createPlane(0, this.options.islandWidth, false);
+      }
+
+      update(time) {
+        this.uTime.value = time;
+      }
+    }
+
+    const roadBaseFragment = `
+      #define USE_FOG;
+      varying vec2 vUv; 
+      uniform vec3 uColor;
+      uniform float uTime;
+      #include <roadMarkings_vars>
+      ${THREE.ShaderChunk['fog_pars_fragment']}
+      void main() {
+        vec2 uv = vUv;
+        vec3 color = vec3(uColor);
+        #include <roadMarkings_fragment>
+        gl_FragColor = vec4(color, 1.);
+        ${THREE.ShaderChunk['fog_fragment']}
+      }
+    `;
+
+    const islandFragment = roadBaseFragment
+      .replace('#include <roadMarkings_fragment>', '')
+      .replace('#include <roadMarkings_vars>', '');
+
+    const roadMarkings_vars = `
+      uniform float uLanes;
+      uniform vec3 uBrokenLinesColor;
+      uniform vec3 uShoulderLinesColor;
+      uniform float uShoulderLinesWidthPercentage;
+      uniform float uBrokenLinesWidthPercentage;
+      uniform float uBrokenLinesLengthPercentage;
+      highp float random(vec2 co) {
+        highp float a = 12.9898;
+        highp float b = 78.233;
+        highp float c = 43758.5453;
+        highp float dt = dot(co.xy, vec2(a, b));
+        highp float sn = mod(dt, 3.14);
+        return fract(sin(sn) * c);
+      }
+    `;
+
+    const roadMarkings_fragment = `
+      uv.y = mod(uv.y + uTime * 0.05, 1.);
+      float laneWidth = 1.0 / uLanes;
+      float brokenLineWidth = laneWidth * uBrokenLinesWidthPercentage;
+      float laneEmptySpace = 1. - uBrokenLinesLengthPercentage;
+
+      float brokenLines = step(1.0 - brokenLineWidth, fract(uv.x * 2.0)) * step(laneEmptySpace, fract(uv.y * 10.0));
+      float sideLines = step(1.0 - brokenLineWidth, fract((uv.x - laneWidth * (uLanes - 1.0)) * 2.0)) + step(1.0 - uShoulderLinesWidthPercentage, uv.x);
+
+      color = mix(color, uBrokenLinesColor, clamp(brokenLines, 0.0, 1.0));
+      color = mix(color, uShoulderLinesColor, clamp(sideLines, 0.0, 1.0));
+    `;
+
+    const roadFragment = roadBaseFragment
+      .replace('#include <roadMarkings_fragment>', roadMarkings_fragment)
+      .replace('#include <roadMarkings_vars>', roadMarkings_vars);
+
+    const roadVertex = `
+      #define USE_FOG;
+      uniform float uTime;
+      ${THREE.ShaderChunk['fog_pars_vertex']}
+      uniform float uTravelLength;
+      varying vec2 vUv; 
+      #include <getDistortion_vertex>
+      void main() {
+        vec3 transformed = position.xyz;
+        vec3 distortion = getDistortion((transformed.y + uTravelLength / 2.) / uTravelLength);
+        transformed.x += distortion.x;
+        transformed.z += distortion.y;
+        transformed.y += -1. * distortion.z;  
+        
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.);
+        gl_Position = projectionMatrix * mvPosition;
+        vUv = uv;
+        ${THREE.ShaderChunk['fog_vertex']}
+      }
+    `;
+
+    function resizeRendererToDisplaySize(renderer, setSize) {
+      const canvas = renderer.domElement;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      if (width <= 0 || height <= 0) return false;
+      const needResize = canvas.width !== width || canvas.height !== height;
+      if (needResize) {
+        setSize(width, height, false);
+      }
+      return needResize;
+    }
+
+    const container = hyperspeed.current;
+    if (!container) return;
+
+    const options = {
+      ...DEFAULT_EFFECT_OPTIONS,
+      ...effectOptions,
+      colors: { ...DEFAULT_EFFECT_OPTIONS.colors, ...(effectOptions.colors || {}) }
+    };
+    options.distortion = distortions[options.distortion] || distortions.turbulentDistortion;
+
+    const myApp = new App(container, options);
+    appRef.current = myApp;
+    myApp.loadAssets().then(myApp.init);
+
+    return () => {
+      if (appRef.current) {
+        appRef.current.dispose();
+        appRef.current = null;
+      }
+    };
+  }, [effectOptions]);
+
+  return React.createElement('div', { id: 'lights', ref: hyperspeed });
 };
 
-/*
-================================================================
-  updateUI()
-  ────────────────────────────────────────────────────────────
-  PURPOSE:
-    Reads `trafficSystem` (state) and imperatively updates
-    every visual element in the DOM to match.
+const rootElement = document.getElementById('app');
 
-  DESIGN RULE:
-    This function contains NO logic — it only maps state → DOM.
-    It is safe to call at any time; calling it twice in a row
-    should produce an identical result (idempotent).
-
-  FLOW:
-    1. Compute which CSS class each bulb/card/badge should have.
-    2. Use classList to apply exactly one active class.
-    3. Update map mini-lights & animated cars.
-    4. Enable/disable the switch button based on isTransitioning.
-================================================================
-*/
-function updateUI() {
-  const { ns, ew, isTransitioning } = trafficSystem;
-
-  /* ── Helper: set exactly one active class on a light bulb ── */
-  function setBulb(el, activeClass) {
-    el.classList.remove('on-red', 'on-yellow', 'on-green');
-    if (activeClass) el.classList.add(activeClass);
-  }
-
-  /* ── Helper: update a mini-map circle opacity ── */
-  function setMapLight(circles, activeKey) {
-    Object.entries(circles).forEach(([key, el]) => {
-      el.style.opacity = key === activeKey ? '1' : '0.15';
-    });
-  }
-
-  /* ── Helper: update card glow class ── */
-  function setCardGlow(cardEl, colour) {
-    cardEl.classList.remove('active-green', 'active-yellow', 'active-red');
-    cardEl.classList.add(`active-${colour}`);
-  }
-
-  /* ── Helper: update a state badge text & class ── */
-  function setBadge(el, colour) {
-    el.classList.remove('badge-red', 'badge-yellow', 'badge-green');
-    el.classList.add(`badge-${colour}`);
-    el.textContent = colour.toUpperCase();
-  }
-
-  /* ── Apply NS corridor state ── */
-  setBulb(DOM.nsBulbs.red,    ns === 'red'    ? 'on-red'    : null);
-  setBulb(DOM.nsBulbs.yellow, ns === 'yellow' ? 'on-yellow' : null);
-  setBulb(DOM.nsBulbs.green,  ns === 'green'  ? 'on-green'  : null);
-  setMapLight(DOM.mapNS, ns);
-  setCardGlow(DOM.cardNS, ns);
-  setBadge(DOM.badgeNS, ns);
-
-  /* ── Apply EW corridor state ── */
-  setBulb(DOM.ewBulbs.red,    ew === 'red'    ? 'on-red'    : null);
-  setBulb(DOM.ewBulbs.yellow, ew === 'yellow' ? 'on-yellow' : null);
-  setBulb(DOM.ewBulbs.green,  ew === 'green'  ? 'on-green'  : null);
-  setMapLight(DOM.mapEW, ew);
-  setCardGlow(DOM.cardEW, ew);
-  setBadge(DOM.badgeEW, ew);
-
-  /* ── Animate SVG cars ──
-       The NS car drives when NS is green.
-       CSS transition handles the smooth movement.
-       translateY values: parked at top (y≈12), crossing (y≈120).  */
-  DOM.carNS.style.opacity   = ns === 'green' ? '1' : '0.25';
-  DOM.carNS.style.transform = ns === 'green'
-    ? 'translate(237px, 108px)'   // car moving through intersection
-    : 'translate(237px, 12px)';   // car stopped at red
-
-  DOM.carEW.style.opacity   = ew === 'green' ? '1' : '0.25';
-  DOM.carEW.style.transform = ew === 'green'
-    ? 'translate(155px, 69px)'    // car moving through intersection
-    : 'translate(310px, 69px)';   // car stopped at red
-
-  /* ── Switch button & transition chip state ── */
-  DOM.btnSwitch.disabled = isTransitioning;
-  DOM.chipTransition.textContent    = isTransitioning ? 'Transitioning' : 'Stable';
-  DOM.chipTransition.className      = `chip ${isTransitioning ? 'chip--warn' : 'chip--idle'}`;
-
-  /* ── Metrics ── */
-  const elapsed = Math.floor((Date.now() - trafficSystem.startTime) / 1000);
-  DOM.metricCycles.textContent = trafficSystem.totalCycles;
-  DOM.metricActive.textContent = ns === 'green' ? 'N–S' : (ew === 'green' ? 'E–W' : '—');
-  DOM.metricUptime.textContent = elapsed >= 60
-    ? `${Math.floor(elapsed/60)}m${elapsed%60}s`
-    : `${elapsed}s`;
+if (rootElement) {
+  const root = createRoot(rootElement);
+  root.render(
+    React.createElement(Hyperspeed, {
+      effectOptions: {
+        onSpeedUp: () => document.body.classList.add('boosting'),
+        onSlowDown: () => document.body.classList.remove('boosting')
+      }
+    })
+  );
 }
-
-/*
-================================================================
-  sleep(ms)
-  ────────────────────────────────────────────────────────────
-  A Promise-based delay used inside the async transition
-  function. Leverages the browser's macrotask queue via
-  setTimeout so the Event Loop can render frames between steps.
-================================================================
-*/
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/*
-================================================================
-  startCountdown(corridor, seconds)
-  ────────────────────────────────────────────────────────────
-  Shows a live ticking countdown badge on the intersection card.
-  Uses setInterval to tick down every second and hides itself
-  when time runs out.
-  `corridor` is 'ns' or 'ew'.
-================================================================
-*/
-function startCountdown(corridor, seconds) {
-  const timerEl = corridor === 'ns' ? DOM.timerNS : DOM.timerEW;
-  timerEl.classList.remove('hidden');
-  timerEl.textContent = `${seconds}s`;
-
-  let remaining = seconds;
-  const id = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) {
-      clearInterval(id);
-      timerEl.classList.add('hidden');
-    } else {
-      timerEl.textContent = `${remaining}s`;
-    }
-  }, 1000);
-}
-
-/*
-================================================================
-  addLog(message, level)
-  ────────────────────────────────────────────────────────────
-  Appends a formatted entry to the sidebar log panel.
-  `level` is one of: 'info' | 'warn' | 'success' | 'error'
-
-  IMPLEMENTATION NOTE:
-    Maximum 60 entries are kept to avoid unbounded DOM growth.
-    We use insertAdjacentHTML for performance (single reflow).
-    The log body uses `aria-live="polite"` so screen readers
-    announce new entries non-intrusively.
-================================================================
-*/
-function addLog(message, level = 'info') {
-  const MAX_LOGS = 60;
-
-  // Build timestamp string (HH:MM:SS)
-  const now  = new Date();
-  const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-    .map(n => String(n).padStart(2, '0'))
-    .join(':');
-
-  // Level label shorthand displayed in the grid
-  const labels = { info: 'INFO', warn: 'WARN', success: ' OK ', error: 'ERR!' };
-
-  // Sanitise message to prevent XSS via log injection
-  const safe = message
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  const html = `
-    <div class="log-entry ${level}" role="listitem">
-      <span class="log-entry__time">${time}</span>
-      <span class="log-entry__level">${labels[level] || 'INFO'}</span>
-      <span class="log-entry__msg">${safe}</span>
-    </div>`;
-
-  // Prepend so newest entry is always at the top
-  DOM.logBody.insertAdjacentHTML('afterbegin', html);
-
-  // Prune oldest entries when cap is exceeded
-  while (DOM.logBody.children.length > MAX_LOGS) {
-    DOM.logBody.removeChild(DOM.logBody.lastChild);
-  }
-}
-
-/*
-================================================================
-  transitionLights()
-  ────────────────────────────────────────────────────────────
-  THE CORE ASYNC STATE MACHINE.
-
-  This is an `async` function that orchestrates a safe,
-  multi-step colour transition using `await sleep()`.
-
-  GUARANTEED SEQUENCE (if NS is currently Green):
-    1. Set isTransitioning = true   ← LOCK acquired
-    2. NS → Yellow (3 s buffer)
-    3. NS → Red
-    4. Safety pause (1 s) — both are Red, nobody moves
-    5. EW → Green
-    6. Set isTransitioning = false  ← LOCK released
-
-  The same sequence applies in reverse (EW → NS).
-
-  WHY ASYNC / AWAIT?
-    setTimeout callbacks would require nesting and make the
-    sequence hard to follow. async/await flattens the logic
-    into imperative, readable steps without blocking the UI
-    thread — the Event Loop continues to process paint frames
-    and user events between each `await`.
-
-  RACE CONDITION PROTECTION:
-    The guard `if (trafficSystem.isTransitioning) return;`
-    at the TOP of handleLogic() ensures this function is
-    never entered while a transition is already in-flight.
-    Once the lock is set, no external code path can change
-    trafficSystem.ns or trafficSystem.ew.
-================================================================
-*/
-async function transitionLights() {
-  // Determine which corridor is currently Green (the "active" one)
-  const activeIsNS = trafficSystem.ns === 'green';
-
-  const fromDir = activeIsNS ? 'N–S' : 'E–W';
-  const toDir   = activeIsNS ? 'E–W' : 'N–S';
-
-  addLog(`Transition requested: ${fromDir} → ${toDir}`, 'info');
-
-  // ── STEP 1: ACQUIRE LOCK ──────────────────────────────────
-  // Any handleLogic() call that arrives while this flag is
-  // true will immediately return, preventing a second
-  // concurrent transition from starting.
-  trafficSystem.isTransitioning = true;
-  updateUI();
-
-  // ── STEP 2: YELLOW BUFFER (3 seconds) ────────────────────
-  // The currently-green corridor turns Yellow.
-  // This gives real-world drivers time to clear the junction.
-  if (activeIsNS) {
-    trafficSystem.ns = 'yellow';
-  } else {
-    trafficSystem.ew = 'yellow';
-  }
-
-  const YELLOW_DURATION = 3; // seconds
-  startCountdown(activeIsNS ? 'ns' : 'ew', YELLOW_DURATION);
-  addLog(`${fromDir} → YELLOW  (${YELLOW_DURATION}s buffer)`, 'warn');
-  updateUI();
-
-  // Await suspends execution HERE; the Event Loop is free to
-  // process paint frames so the yellow light visually appears
-  // before we continue.
-  await sleep(YELLOW_DURATION * 1000);
-
-  // ── STEP 3: ACTIVE CORRIDOR GOES RED ─────────────────────
-  if (activeIsNS) {
-    trafficSystem.ns = 'red';
-  } else {
-    trafficSystem.ew = 'red';
-  }
-  addLog(`${fromDir} → RED`, 'error');
-  updateUI();
-
-  // ── STEP 4: ALL-RED SAFETY PAUSE (1 second) ──────────────
-  // Both corridors are now Red. This 1-second clearance
-  // ensures any vehicle caught in the transition zone has
-  // exited before the crossing direction turns Green.
-  const SAFETY_PAUSE = 1; // seconds
-  addLog(`All-RED safety pause (${SAFETY_PAUSE}s)…`, 'warn');
-  await sleep(SAFETY_PAUSE * 1000);
-
-  // ── STEP 5: OPPOSITE CORRIDOR TURNS GREEN ────────────────
-  if (activeIsNS) {
-    trafficSystem.ew = 'green';
-  } else {
-    trafficSystem.ns = 'green';
-  }
-  trafficSystem.totalCycles++;
-  addLog(`${toDir} → GREEN  ✓  (cycle #${trafficSystem.totalCycles})`, 'success');
-
-  // Start a countdown showing how long this corridor stays green
-  // (only relevant in auto mode, but we display it regardless)
-  if (trafficSystem.autoCycle) {
-    startCountdown(activeIsNS ? 'ew' : 'ns', trafficSystem.cycleInterval);
-  }
-
-  updateUI();
-
-  // ── STEP 6: RELEASE LOCK ──────────────────────────────────
-  // The transition is complete. New input is now accepted.
-  trafficSystem.isTransitioning = false;
-  updateUI(); // re-render to re-enable the button
-}
-
-/*
-================================================================
-  handleLogic()
-  ────────────────────────────────────────────────────────────
-  ENTRY POINT for all state-change requests, whether triggered
-  by a human click or the auto-cycle timer.
-
-  GUARD:
-    The very first check is the race-condition guard.
-    If a transition is already in progress, we log the
-    skip and return immediately — no state is mutated.
-
-  FLOW:
-    1. Guard (isTransitioning?)
-    2. Validate current state (is one corridor actually Green?)
-    3. Delegate to transitionLights() (async — returns immediately
-       but continues running in the background on the Event Loop)
-================================================================
-*/
-function handleLogic() {
-  // ── RACE CONDITION GUARD ──────────────────────────────────
-  // If the async transition is already running, drop this
-  // request silently (or log it for debug purposes).
-  if (trafficSystem.isTransitioning) {
-    addLog('Input ignored — transition already in progress.', 'warn');
-    return;
-  }
-
-  // ── SANITY CHECK ─────────────────────────────────────────
-  // In normal operation exactly one corridor is green.
-  // If state is somehow invalid, log and bail out.
-  const nsIsGreen = trafficSystem.ns === 'green';
-  const ewIsGreen = trafficSystem.ew === 'green';
-
-  if (!nsIsGreen && !ewIsGreen) {
-    addLog('State error: no corridor is Green. Re-initialising.', 'error');
-    trafficSystem.ns = 'green';
-    trafficSystem.ew = 'red';
-    updateUI();
-    return;
-  }
-
-  if (nsIsGreen && ewIsGreen) {
-    addLog('State error: both corridors are Green! Forcing safe state.', 'error');
-    trafficSystem.ew = 'red';
-    updateUI();
-    return;
-  }
-
-  // ── HAND OFF TO STATE MACHINE ─────────────────────────────
-  // transitionLights() is async but we do NOT await it here.
-  // It self-manages via the isTransitioning flag.
-  transitionLights();
-}
-
-/*
-================================================================
-  startAutoTimer()  /  stopAutoTimer()
-  ────────────────────────────────────────────────────────────
-  Manage the setInterval that drives automatic cycling.
-  stopAutoTimer() always clears the interval reference safely.
-================================================================
-*/
-function startAutoTimer() {
-  stopAutoTimer(); // always cancel any existing timer first
-  autoTimer = setInterval(() => {
-    addLog(`Auto-cycle triggered (every ${trafficSystem.cycleInterval}s)`, 'info');
-    handleLogic();
-  }, trafficSystem.cycleInterval * 1000);
-
-  addLog(`Auto-cycle ENABLED — switching every ${trafficSystem.cycleInterval}s`, 'success');
-}
-
-function stopAutoTimer() {
-  if (autoTimer !== null) {
-    clearInterval(autoTimer);
-    autoTimer = null;
-  }
-}
-
-/*
-================================================================
-  init()
-  ────────────────────────────────────────────────────────────
-  BOOTSTRAP function. Runs exactly once when the page loads.
-
-  Responsibilities:
-    1. Render the initial state to the DOM (updateUI).
-    2. Attach all event listeners.
-    3. Start the live clock and uptime ticker.
-    4. Write the initial system log entries.
-
-  WHY A DEDICATED init()?
-    Keeping setup code isolated here makes it easy to test,
-    replay, or defer (e.g. if the DOM were not ready yet).
-================================================================
-*/
-function init() {
-  // ── 1. Render initial state ───────────────────────────────
-  updateUI();
-  addLog('System initialised. N–S corridor is GREEN.', 'success');
-  addLog('State machine ready. Race condition guard: ACTIVE.', 'info');
-  addLog('Click "Switch Direction" or enable Auto-Cycle to begin.', 'info');
-
-  // ── 2. Manual switch button ───────────────────────────────
-  DOM.btnSwitch.addEventListener('click', () => {
-    addLog('Manual switch requested by operator.', 'info');
-    handleLogic();
-  });
-
-  // ── 3. Auto-cycle toggle ──────────────────────────────────
-  DOM.autoToggle.addEventListener('change', () => {
-    trafficSystem.autoCycle = DOM.autoToggle.checked;
-    DOM.chipMode.textContent = trafficSystem.autoCycle ? 'Auto Mode' : 'Manual Mode';
-    DOM.chipMode.className   = `chip ${trafficSystem.autoCycle ? 'chip--active' : 'chip--idle'}`;
-
-    if (trafficSystem.autoCycle) {
-      startAutoTimer();
-    } else {
-      stopAutoTimer();
-      addLog('Auto-cycle DISABLED — manual control restored.', 'warn');
-    }
-  });
-
-  // ── 4. Interval slider ────────────────────────────────────
-  DOM.intervalSlider.addEventListener('input', () => {
-    const val = parseInt(DOM.intervalSlider.value, 10);
-    trafficSystem.cycleInterval = val;
-    DOM.sliderDisplay.textContent = `${val}s`;
-
-    // If auto mode is on, restart the timer with the new interval
-    if (trafficSystem.autoCycle) {
-      addLog(`Cycle interval updated → ${val}s. Restarting timer.`, 'info');
-      startAutoTimer();
-    }
-  });
-
-  // ── 5. Clear logs button ──────────────────────────────────
-  DOM.btnClearLogs.addEventListener('click', () => {
-    DOM.logBody.innerHTML = '';
-    addLog('Log cleared by operator.', 'warn');
-  });
-
-  // ── 6. Live clock update (every second via Event Loop) ────
-  // Uses setInterval to schedule a macrotask each second.
-  // This does NOT block — each tick is a separate callback
-  // dispatched from the task queue when the stack is clear.
-  setInterval(() => {
-    const now = new Date();
-    DOM.clock.textContent = now.toLocaleTimeString();
-    updateUI(); // refresh uptime metric on same tick
-  }, 1000);
-}
-
-/*
-================================================================
-  ENTRY POINT
-  DOMContentLoaded fires once the HTML is parsed and the DOM
-  is ready. We guard here rather than calling init() directly
-  so the script can be moved to the <head> in the future
-  without breaking DOM access.
-================================================================
-*/
-document.addEventListener('DOMContentLoaded', init);
