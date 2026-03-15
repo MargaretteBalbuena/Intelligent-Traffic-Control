@@ -1227,7 +1227,8 @@ const state = {
   ns: 'green',   // 'red' | 'yellow' | 'green'
   ew: 'red',
   transitioning: false,
-  queued: false
+  queued: false,
+  logsVisible: true
 };
 
 
@@ -1248,7 +1249,10 @@ const dom = {
     green:  document.querySelector('#ew-green'),
     pill:   document.querySelector('#pill-ew')
   },
+  shell: document.querySelector('#dashboard-shell'),
+  panelLog: document.querySelector('#panel-log'),
   btnSwitch: document.querySelector('#btn-switch'),
+  btnToggleLogs: document.querySelector('#btn-toggle-logs'),
   modeChip:  document.querySelector('#chip-mode'),
   logBody:   document.querySelector('#log-body')
 };
@@ -1302,6 +1306,11 @@ function updateUI() {
   // The button is disabled (not removed) while a transition runs.
   // Clicks are still received and queued via handleLogic().
   dom.btnSwitch.disabled = state.transitioning;
+
+  dom.shell.classList.toggle('logs-hidden', !state.logsVisible);
+  dom.panelLog.setAttribute('aria-hidden', String(!state.logsVisible));
+  dom.btnToggleLogs.textContent = state.logsVisible ? 'Hide Logs' : 'Show Logs';
+  dom.btnToggleLogs.setAttribute('aria-expanded', String(state.logsVisible));
 }
 
 /**
@@ -1554,6 +1563,10 @@ function init() {
   // All clicks are routed through handleLogic(), which guards against
   // race conditions before delegating to transitionLights().
   dom.btnSwitch.addEventListener('click', () => handleLogic('manual-switch'));
+  dom.btnToggleLogs.addEventListener('click', () => {
+    state.logsVisible = !state.logsVisible;
+    updateUI();
+  });
 }
 
 
@@ -1565,7 +1578,7 @@ function init() {
 const DOM_READY = [
   dom.ns.red, dom.ns.yellow, dom.ns.green, dom.ns.pill,
   dom.ew.red, dom.ew.yellow, dom.ew.green, dom.ew.pill,
-  dom.btnSwitch, dom.modeChip, dom.logBody
+  dom.shell, dom.panelLog, dom.btnSwitch, dom.btnToggleLogs, dom.modeChip, dom.logBody
 ].every(Boolean);
 
 if (DOM_READY) {
