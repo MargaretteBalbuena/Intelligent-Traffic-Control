@@ -16,6 +16,25 @@
 
 <body>
 	<div id="app"></div>
+	<div id="traffic-overview" aria-hidden="true">
+		<div class="road road-ns">
+			<div class="lane-lines"></div>
+			<span class="car ns-car down" style="--lane:-24px; --delay:-1.5s; --dur:12s;"></span>
+			<span class="car ns-car down" style="--lane:-24px; --delay:-7.2s; --dur:11.5s;"></span>
+			<span class="car ns-car up" style="--lane:24px; --delay:-3.8s; --dur:12.8s;"></span>
+			<span class="car ns-car up" style="--lane:24px; --delay:-9.6s; --dur:11.9s;"></span>
+		</div>
+
+		<div class="road road-ew">
+			<div class="lane-lines"></div>
+			<span class="car ew-car right" style="--lane:-24px; --delay:-2.2s; --dur:10.8s;"></span>
+			<span class="car ew-car right" style="--lane:-24px; --delay:-8.3s; --dur:11.1s;"></span>
+			<span class="car ew-car left" style="--lane:24px; --delay:-4.9s; --dur:10.5s;"></span>
+			<span class="car ew-car left" style="--lane:24px; --delay:-10.4s; --dur:11.4s;"></span>
+		</div>
+
+		<div class="intersection-core"></div>
+	</div>
 
 	<main class="dashboard-shell" id="dashboard-shell" aria-label="Intelligent Traffic Control Dashboard">
 		<section class="panel panel-main" aria-label="Traffic Signals">

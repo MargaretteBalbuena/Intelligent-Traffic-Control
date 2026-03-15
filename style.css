@@ -10,10 +10,12 @@ body {
 }
 
 body {
-  --bg-night-top: #02040e;
-  --bg-night-bottom: #070d1b;
+  --bg-night-top: #07080d;
+  --bg-night-bottom: #13161f;
   --glow-cyan: #15d8ff;
   --glow-rose: #ff4a9a;
+  --glow-amber: #ffb84a;
+  --glow-gold: #ffd66b;
   --text-main: #f5fbff;
   --text-soft: #9aa9bb;
 
@@ -21,8 +23,8 @@ body {
   color: var(--text-main);
   overflow: hidden;
   background:
-    radial-gradient(130% 90% at 50% -10%, rgba(50, 82, 190, 0.35), transparent 60%),
-    radial-gradient(90% 70% at 85% 110%, rgba(255, 74, 154, 0.18), transparent 60%),
+    radial-gradient(120% 90% at 50% -10%, rgba(255, 164, 64, 0.12), transparent 55%),
+    radial-gradient(95% 75% at 15% 110%, rgba(255, 214, 107, 0.09), transparent 58%),
     linear-gradient(180deg, var(--bg-night-top), var(--bg-night-bottom));
 }
 
@@ -47,7 +49,9 @@ body::before {
 }
 
 body::after {
-  background: radial-gradient(circle at 50% 105%, rgba(21, 216, 255, 0.25), transparent 38%);
+  background:
+    radial-gradient(circle at 50% 105%, rgba(255, 184, 74, 0.26), transparent 40%),
+    radial-gradient(circle at 50% -5%, rgba(255, 214, 107, 0.08), transparent 42%);
   transition: opacity 220ms ease, filter 220ms ease;
 }
 
@@ -59,6 +63,287 @@ body.boosting::after {
 #app {
   position: fixed;
   inset: 0;
+  opacity: 0;
+}
+
+#traffic-overview {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.road {
+  position: absolute;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(27, 28, 35, 0.95), rgba(18, 20, 27, 0.95));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 0 55px rgba(0, 0, 0, 0.46),
+    0 0 46px rgba(255, 176, 74, 0.09);
+}
+
+.road-ns {
+  width: clamp(180px, 17vw, 260px);
+  height: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.road-ew {
+  width: 100%;
+  height: clamp(180px, 17vw, 260px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.road::before,
+.road::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.road-ns::before,
+.road-ns::after {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(255, 214, 107, 0), rgba(255, 214, 107, 0.9), rgba(255, 214, 107, 0));
+  box-shadow: 0 0 12px rgba(255, 184, 74, 0.55);
+}
+
+.road-ns::before {
+  left: 14px;
+}
+
+.road-ns::after {
+  right: 14px;
+}
+
+.road-ew::before,
+.road-ew::after {
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(255, 214, 107, 0), rgba(255, 214, 107, 0.9), rgba(255, 214, 107, 0));
+  box-shadow: 0 0 12px rgba(255, 184, 74, 0.55);
+}
+
+.road-ew::before {
+  top: 14px;
+}
+
+.road-ew::after {
+  bottom: 14px;
+}
+
+.lane-lines {
+  position: absolute;
+  inset: 0;
+  opacity: 0.82;
+}
+
+.road-ns .lane-lines {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 212, 129, 0.9) 0 16px,
+      transparent 16px 34px
+    );
+  width: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 0 14px rgba(255, 205, 112, 0.62);
+}
+
+.road-ew .lane-lines {
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(255, 212, 129, 0.9) 0 16px,
+      transparent 16px 34px
+    );
+  height: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  box-shadow: 0 0 14px rgba(255, 205, 112, 0.62);
+}
+
+.intersection-core {
+  position: absolute;
+  width: clamp(180px, 17vw, 260px);
+  height: clamp(180px, 17vw, 260px);
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(140deg, rgba(255, 152, 48, 0.15), rgba(255, 216, 120, 0.05));
+  box-shadow:
+    inset 0 0 30px rgba(0, 0, 0, 0.48),
+    0 0 44px rgba(255, 161, 74, 0.12);
+  border: 1px solid rgba(255, 205, 112, 0.2);
+  border-radius: 4px;
+}
+
+.car {
+  position: absolute;
+  width: 17px;
+  height: 34px;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, #ffecc2 0%, #ffca6e 16%, #ff9a2f 58%, #a64d0a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 0 16px rgba(255, 174, 73, 0.62);
+  opacity: 0.95;
+}
+
+.car::before,
+.car::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 9px;
+  height: 4px;
+  border-radius: 999px;
+}
+
+.car::before {
+  top: 2px;
+  background: rgba(255, 242, 176, 0.96);
+  box-shadow: 0 0 9px rgba(255, 232, 166, 0.75);
+}
+
+.car::after {
+  bottom: 2px;
+  background: rgba(255, 110, 46, 0.9);
+  box-shadow: 0 0 10px rgba(255, 110, 46, 0.72);
+}
+
+.ns-car.down {
+  left: calc(50% + var(--lane));
+  animation: drive-down var(--dur) linear infinite;
+  animation-delay: var(--delay);
+}
+
+.ns-car.up {
+  left: calc(50% + var(--lane));
+  animation: drive-up var(--dur) linear infinite;
+  animation-delay: var(--delay);
+}
+
+.ew-car {
+  width: 34px;
+  height: 17px;
+}
+
+.ew-car.right {
+  top: calc(50% + var(--lane));
+  animation: drive-right var(--dur) linear infinite;
+  animation-delay: var(--delay);
+}
+
+.ew-car.left {
+  top: calc(50% + var(--lane));
+  animation: drive-left var(--dur) linear infinite;
+  animation-delay: var(--delay);
+}
+
+.ew-car::before,
+.ew-car::after {
+  top: 50%;
+  left: auto;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 9px;
+}
+
+.ew-car::before {
+  right: 2px;
+}
+
+.ew-car::after {
+  left: 2px;
+}
+
+.car {
+  animation-play-state: paused;
+}
+
+body.ns-go .ns-car {
+  animation-play-state: running;
+  opacity: 1;
+  filter: saturate(1.1) brightness(1.06);
+}
+
+body.ns-go .ew-car {
+  animation-play-state: paused;
+  opacity: 0.16;
+  filter: saturate(0.34) brightness(0.62);
+}
+
+body.ew-go .ew-car {
+  animation-play-state: running;
+  opacity: 1;
+  filter: saturate(1.1) brightness(1.06);
+}
+
+body.ew-go .ns-car {
+  animation-play-state: paused;
+  opacity: 0.16;
+  filter: saturate(0.34) brightness(0.62);
+}
+
+body.ns-go .road-ns,
+body.ew-go .road-ew {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 226, 160, 0.08),
+    inset 0 0 56px rgba(0, 0, 0, 0.42),
+    0 0 56px rgba(255, 176, 74, 0.16);
+}
+
+body.ns-go .road-ew,
+body.ew-go .road-ns {
+  filter: brightness(0.88) saturate(0.82);
+}
+
+@keyframes drive-down {
+  from {
+    transform: translateY(-13vh);
+  }
+  to {
+    transform: translateY(112vh);
+  }
+}
+
+@keyframes drive-up {
+  from {
+    transform: translateY(112vh);
+  }
+  to {
+    transform: translateY(-13vh);
+  }
+}
+
+@keyframes drive-right {
+  from {
+    transform: translateX(-16vw);
+  }
+  to {
+    transform: translateX(116vw);
+  }
+}
+
+@keyframes drive-left {
+  from {
+    transform: translateX(116vw);
+  }
+  to {
+    transform: translateX(-16vw);
+  }
 }
 
 #lights {
@@ -91,10 +376,10 @@ canvas {
 }
 
 .panel {
-  background: linear-gradient(160deg, rgba(5, 14, 35, 0.72), rgba(7, 16, 28, 0.55));
+  background: linear-gradient(160deg, rgba(5, 14, 35, 0.34), rgba(7, 16, 28, 0.2));
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 18px;
-  backdrop-filter: blur(9px);
+  backdrop-filter: blur(4px) saturate(1.08);
   box-shadow: 0 20px 42px rgba(0, 0, 0, 0.3);
 }
 
@@ -136,7 +421,7 @@ canvas {
 }
 
 .signal-card {
-  background: rgba(10, 18, 35, 0.58);
+  background: rgba(10, 18, 35, 0.24);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   padding: 14px;
@@ -384,6 +669,19 @@ canvas {
 }
 
 @media (max-width: 768px) {
+  .road-ns {
+    width: clamp(130px, 26vw, 190px);
+  }
+
+  .road-ew {
+    height: clamp(130px, 26vw, 190px);
+  }
+
+  .intersection-core {
+    width: clamp(130px, 26vw, 190px);
+    height: clamp(130px, 26vw, 190px);
+  }
+
   .dashboard-shell {
     grid-template-columns: 1fr;
     gap: 12px;

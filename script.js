@@ -1307,6 +1307,11 @@ function updateUI() {
   // Clicks are still received and queued via handleLogic().
   dom.btnSwitch.disabled = state.transitioning;
 
+  const nsGo = state.ns === 'green' && state.ew === 'red';
+  const ewGo = state.ew === 'green' && state.ns === 'red';
+  document.body.classList.toggle('ns-go', nsGo);
+  document.body.classList.toggle('ew-go', ewGo);
+
   dom.shell.classList.toggle('logs-hidden', !state.logsVisible);
   dom.panelLog.setAttribute('aria-hidden', String(!state.logsVisible));
   dom.btnToggleLogs.textContent = state.logsVisible ? 'Hide Logs' : 'Show Logs';
